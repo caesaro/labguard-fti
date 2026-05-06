@@ -1,0 +1,6 @@
+{
+  "name": "Labguard FTI",
+  "description": "Internet access controller for MikroTik CCR routers using RouterOS REST API.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
