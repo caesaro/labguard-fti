@@ -43,6 +43,12 @@ type LabInterface = {
   teacherIp?: string;
   rxRate?: number;
   txRate?: number;
+  queueTreeId?: string;
+  queueTreeName?: string;
+  bandwidthEnabled?: boolean;
+  bandwidthLimit?: number;
+  bandwidthLimitMbps?: number;
+  hasQueueTree?: boolean;
 };
 
 const DEFAULT_ADMIN_PIN = '123456';
@@ -90,19 +96,19 @@ function getPublicServerHost() {
 }
 
 let mockInterfaces: LabInterface[] = [
-  { id: '*10', name: 'lab 467', enabled: true, running: true, comment: 'VLAN 67 - Lab Jaringan Utama', type: 'vlan', interfaceEnabled: true, internetBlocked: false },
-  { id: '*11', name: 'lab 461', enabled: false, running: true, comment: 'VLAN 61 - Lab Pemrograman', type: 'vlan', interfaceEnabled: true, internetBlocked: true },
-  { id: '*12', name: 'lab 464', enabled: true, running: true, comment: 'VLAN 64 - Lab Sistem Operasi', type: 'vlan', interfaceEnabled: true, internetBlocked: false },
-  { id: '*13', name: 'vlan-management', enabled: true, running: true, comment: 'VLAN 10 - Management Core', type: 'vlan', interfaceEnabled: true, internetBlocked: false },
-  { id: '*14', name: 'lab 465', enabled: true, running: true, comment: 'VLAN 65 - Lab IoT & Robotik', type: 'vlan', interfaceEnabled: true, internetBlocked: false },
-  { id: '*15', name: 'lab 462', enabled: true, running: true, comment: 'VLAN 62 - Lab Multimedia', type: 'vlan', interfaceEnabled: true, internetBlocked: false },
-  { id: '*16', name: 'lab 463', enabled: true, running: true, comment: 'VLAN 63 - Lab Basis Data', type: 'vlan', interfaceEnabled: true, internetBlocked: false },
-  { id: '*17', name: 'lab 466', enabled: false, running: true, comment: 'VLAN 66 - Lab Kecerdasan Buatan', type: 'vlan', interfaceEnabled: true, internetBlocked: true },
-  { id: '*18', name: 'lab 468', enabled: true, running: true, comment: 'VLAN 68 - Lab Keamanan Siber', type: 'vlan', interfaceEnabled: true, internetBlocked: false },
-  { id: '*19', name: 'lab 469', enabled: true, running: true, comment: 'VLAN 69 - Lab Cloud Computing', type: 'vlan', interfaceEnabled: true, internetBlocked: false },
-  { id: '*20', name: 'vlan-server-farm', enabled: true, running: true, comment: 'VLAN 100 - Data Center Local', type: 'vlan', interfaceEnabled: true, internetBlocked: false },
-  { id: '*21', name: 'vlan-wifi-mhs', enabled: true, running: true, comment: 'VLAN 200 - Hotspot Mahasiswa', type: 'vlan', interfaceEnabled: true, internetBlocked: false },
-  { id: '*22', name: 'vlan-wifi-dosen', enabled: true, running: true, comment: 'VLAN 210 - Hotspot Staff & Dosen', type: 'vlan', interfaceEnabled: true, internetBlocked: false },
+  { id: '*10', name: 'lab 467', enabled: true, running: true, comment: 'VLAN 67 - Lab Jaringan Utama', type: 'vlan', interfaceEnabled: true, internetBlocked: false, queueTreeId: '*q10', queueTreeName: '467', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true },
+  { id: '*11', name: 'lab 461', enabled: false, running: true, comment: 'VLAN 61 - Lab Pemrograman', type: 'vlan', interfaceEnabled: true, internetBlocked: true, queueTreeId: '*q11', queueTreeName: '461', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true },
+  { id: '*12', name: 'lab 464', enabled: true, running: true, comment: 'VLAN 64 - Lab Sistem Operasi', type: 'vlan', interfaceEnabled: true, internetBlocked: false, queueTreeId: '*q12', queueTreeName: '464', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true },
+  { id: '*13', name: 'vlan-management', enabled: true, running: true, comment: 'VLAN 10 - Management Core', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false },
+  { id: '*14', name: 'lab 465', enabled: true, running: true, comment: 'VLAN 65 - Lab IoT & Robotik', type: 'vlan', interfaceEnabled: true, internetBlocked: false, queueTreeId: '*q14', queueTreeName: '465', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true },
+  { id: '*15', name: 'lab 462', enabled: true, running: true, comment: 'VLAN 62 - Lab Multimedia', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false },
+  { id: '*16', name: 'lab 463', enabled: true, running: true, comment: 'VLAN 63 - Lab Basis Data', type: 'vlan', interfaceEnabled: true, internetBlocked: false, queueTreeId: '*q16', queueTreeName: '463', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true },
+  { id: '*17', name: 'lab 466', enabled: false, running: true, comment: 'VLAN 66 - Lab Kecerdasan Buatan', type: 'vlan', interfaceEnabled: true, internetBlocked: true, bandwidthEnabled: false, hasQueueTree: false },
+  { id: '*18', name: 'lab 468', enabled: true, running: true, comment: 'VLAN 68 - Lab Keamanan Siber', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false },
+  { id: '*19', name: 'lab 469', enabled: true, running: true, comment: 'VLAN 69 - Lab Cloud Computing', type: 'vlan', interfaceEnabled: true, internetBlocked: false, queueTreeId: '*q19', queueTreeName: '469', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true },
+  { id: '*20', name: 'vlan-server-farm', enabled: true, running: true, comment: 'VLAN 100 - Data Center Local', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false },
+  { id: '*21', name: 'vlan-wifi-mhs', enabled: true, running: true, comment: 'VLAN 200 - Hotspot Mahasiswa', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false },
+  { id: '*22', name: 'vlan-wifi-dosen', enabled: true, running: true, comment: 'VLAN 210 - Hotspot Staff & Dosen', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false },
 ];
 
 let localLogs = [
@@ -566,6 +572,47 @@ function mapInterface(iface: RouterRecord): LabInterface {
   };
 }
 
+function extractLabCode(value?: string) {
+  if (!value) return null;
+  const match = String(value).match(/(\d{3})/);
+  return match ? match[1] : null;
+}
+
+function toRouterNumber(value: any) {
+  const parsed = Number(String(value ?? '').trim());
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function toMbps(bitsPerSecond: number) {
+  return Number((bitsPerSecond / 1_000_000).toFixed(2));
+}
+
+function findQueueTreeRule(queueRows: RouterRecord[], iface: LabInterface) {
+  const labCode = extractLabCode(iface.name) || extractLabCode(iface.comment);
+  if (!labCode) return undefined;
+
+  const normalizedCode = labCode.toLowerCase();
+  const candidates = queueRows.filter((row) => {
+    const name = String(row.name || '').toLowerCase();
+    const comment = String(row.comment || '').toLowerCase();
+    const packetMark = String(row['packet-mark'] || '').toLowerCase();
+
+    return (
+      name === normalizedCode ||
+      comment === `qtree${normalizedCode}` ||
+      packetMark === `${normalizedCode}-packet`
+    );
+  });
+
+  if (!candidates.length) return undefined;
+
+  return candidates.sort((left, right) => {
+    const leftParentScore = String(left.parent || '').toLowerCase().includes('parent-all-lab') ? 1 : 0;
+    const rightParentScore = String(right.parent || '').toLowerCase().includes('parent-all-lab') ? 1 : 0;
+    return rightParentScore - leftParentScore;
+  })[0];
+}
+
 async function withRouter<T>(handler: (client: RouterApiClient) => Promise<T>): Promise<T> {
   const client = new RouterApiClient();
 
@@ -592,6 +639,9 @@ async function getLabInterfaces() {
   const natRules = await runRouterCommand('/ip/firewall/nat/print', {
     '.proplist': '.id,chain,action,disabled,comment,in-interface,out-interface,out-interface-list,src-address',
   });
+  const queueTreeRows = await runRouterCommand('/queue/tree/print', {
+    '.proplist': '.id,name,parent,packet-mark,limit-at,max-limit,disabled,comment',
+  });
   const addressMap = buildInterfaceAddressMap(addressRows);
 
   return rows.filter(isManagedInterface).map((row) => {
@@ -601,8 +651,10 @@ async function getLabInterfaces() {
     const studentNatRule = findStudentNatRule(natRules, subnetCidr || undefined);
     const natBlockRule = findNatBlockRule(natRules, iface.name);
     const teacherIp = teacherIpFromCidr(interfaceCidr);
+    const queueTreeRule = findQueueTreeRule(queueTreeRows, iface);
     const studentsEnabled = studentNatRule ? isTruthyRouterDisabled(studentNatRule.disabled) === false : !natBlockRule;
     const internetBlocked = studentNatRule ? isTruthyRouterDisabled(studentNatRule.disabled) : !!natBlockRule && !isTruthyRouterDisabled(natBlockRule.disabled);
+    const bandwidthLimit = queueTreeRule ? toRouterNumber(queueTreeRule['max-limit']) : 0;
 
     return {
       ...iface,
@@ -610,6 +662,12 @@ async function getLabInterfaces() {
       internetBlocked,
       natRuleId: studentNatRule?.['.id'] || natBlockRule?.['.id'],
       teacherIp: teacherIp || undefined,
+      queueTreeId: queueTreeRule?.['.id'],
+      queueTreeName: queueTreeRule?.name,
+      bandwidthEnabled: queueTreeRule ? !isTruthyRouterDisabled(queueTreeRule.disabled) : false,
+      bandwidthLimit: queueTreeRule ? bandwidthLimit : undefined,
+      bandwidthLimitMbps: queueTreeRule ? toMbps(bandwidthLimit) : undefined,
+      hasQueueTree: !!queueTreeRule,
     };
   });
 }
@@ -750,6 +808,51 @@ async function setInternetAccessByNat(interfaceId: string, internetEnabled: bool
   });
 }
 
+async function setQueueTreeBandwidth(interfaceId: string, bandwidthMbps: number) {
+  return withRouter(async (client) => {
+    const interfaceRows = await client.execute('/interface/print', {
+      '.proplist': '.id,name,type,comment',
+    });
+    const iface = interfaceRows
+      .filter(isManagedInterface)
+      .map(mapInterface)
+      .find((item) => item.id === interfaceId);
+
+    if (!iface) {
+      const notFound = new Error('Interface lab tidak ditemukan');
+      (notFound as any).statusCode = 404;
+      throw notFound;
+    }
+
+    const queueTreeRows = await client.execute('/queue/tree/print', {
+      '.proplist': '.id,name,parent,packet-mark,limit-at,max-limit,disabled,comment',
+    });
+    const queueTreeRule = findQueueTreeRule(queueTreeRows, iface);
+
+    if (!queueTreeRule?.['.id']) {
+      const missingQueue = new Error(`Queue tree untuk ${iface.name} belum ada di router`);
+      (missingQueue as any).statusCode = 404;
+      throw missingQueue;
+    }
+
+    const bandwidthBits = Math.max(1, Math.round(bandwidthMbps * 1_000_000));
+
+    await client.execute('/queue/tree/set', {
+      '.id': queueTreeRule['.id'],
+      'max-limit': String(bandwidthBits),
+    });
+
+    return {
+      iface,
+      queueTreeId: queueTreeRule['.id'],
+      queueTreeName: queueTreeRule.name,
+      bandwidthLimit: bandwidthBits,
+      bandwidthLimitMbps: toMbps(bandwidthBits),
+      bandwidthEnabled: !isTruthyRouterDisabled(queueTreeRule.disabled),
+    };
+  });
+}
+
 app.post('/api/login', (req, res) => {
   const pin = String(req.body.pin ?? req.body.password ?? '').trim();
   const remember = Boolean(req.body.remember);
@@ -847,6 +950,53 @@ app.post('/api/interfaces/:id/toggle', requireSession, async (req, res) => {
       internetBlocked: !enabled,
       natRuleId: result.natRuleId,
       teacherIp: result.teacherIp,
+    });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ success: false, error: formatRouterError(error) });
+  }
+});
+
+app.post('/api/interfaces/:id/bandwidth', requireSession, async (req, res) => {
+  const id = decodeURIComponent(req.params.id);
+  const bandwidthMbps = Number(req.body.bandwidthMbps);
+
+  if (!Number.isFinite(bandwidthMbps) || bandwidthMbps <= 0) {
+    return res.status(400).json({ success: false, error: 'Bandwidth harus angka lebih dari 0 Mbps' });
+  }
+
+  if (!HAS_CONFIG) {
+    const found = mockInterfaces.find((iface) => iface.id === id);
+    if (!found) return res.status(404).json({ success: false, error: 'Interface tidak ditemukan' });
+    if (!found.hasQueueTree) {
+      return res.status(404).json({ success: false, error: `Queue tree untuk ${found.name} belum ada di mode simulasi` });
+    }
+
+    mockInterfaces = mockInterfaces.map((iface) =>
+      iface.id === id
+        ? {
+            ...iface,
+            bandwidthLimit: Math.round(bandwidthMbps * 1_000_000),
+            bandwidthLimitMbps: Number(bandwidthMbps.toFixed(2)),
+          }
+        : iface,
+    );
+
+    pushLocalLog(`Bandwidth [${found.name}] di-set ke ${bandwidthMbps} Mbps`, 'info');
+    return res.json({ success: true, id, bandwidthLimitMbps: Number(bandwidthMbps.toFixed(2)) });
+  }
+
+  try {
+    const result = await setQueueTreeBandwidth(id, bandwidthMbps);
+
+    pushLocalLog(`Queue tree [${result.iface.name}] di-set ke ${result.bandwidthLimitMbps} Mbps`, 'info');
+    res.json({
+      success: true,
+      id,
+      queueTreeId: result.queueTreeId,
+      queueTreeName: result.queueTreeName,
+      bandwidthEnabled: result.bandwidthEnabled,
+      bandwidthLimit: result.bandwidthLimit,
+      bandwidthLimitMbps: result.bandwidthLimitMbps,
     });
   } catch (error: any) {
     res.status(error.statusCode || 500).json({ success: false, error: formatRouterError(error) });

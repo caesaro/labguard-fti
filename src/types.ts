@@ -11,6 +11,12 @@ export interface InterfaceStatus {
   teacherIp?: string;
   rxRate?: number;
   txRate?: number;
+  queueTreeId?: string;
+  queueTreeName?: string;
+  bandwidthEnabled?: boolean;
+  bandwidthLimit?: number;
+  bandwidthLimitMbps?: number;
+  hasQueueTree?: boolean;
 }
 
 export interface RouterStatus {

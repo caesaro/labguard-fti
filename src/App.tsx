@@ -49,6 +49,12 @@ const generateHistory = () => {
   }));
 };
 
+const formatBandwidthMbps = (value?: number) => {
+  if (value === undefined || value === null || Number.isNaN(value)) return '--';
+  const normalized = Number(value);
+  return Number.isInteger(normalized) ? `${normalized}` : normalized.toFixed(2).replace(/\.?0+$/, '');
+};
+
 type TrafficPoint = {
   time: number;
   download: number;
@@ -68,6 +74,32 @@ type ConnectionAlert = {
   title: string;
   message: string;
 };
+
+const LABS_ONLY_ORDER = [
+  'vlan461',
+  'vlan463',
+  'vlan467',
+  'vlan464',
+  'vlan465',
+  'vlan469',
+  'vlan459',
+  'vlan457',
+  'vlan455',
+  'vlan454',
+  'vlan453',
+  'vlan451',
+  'vlan431',
+  'vlan402',
+  'vlan506',
+  'vlan507',
+  'vlan301',
+];
+
+const normalizeLabName = (value: string) => value.toLowerCase().replace(/\s+/g, '');
+
+const labsOnlyOrderIndex = new Map(
+  LABS_ONLY_ORDER.map((name, index) => [normalizeLabName(name), index]),
+);
 
 const SESSION_TOKEN_KEY = 'labguard_token';
 const LEGACY_AUTH_KEY = 'labguard_auth';
@@ -113,6 +145,21 @@ export default function App() {
   const [connectionAlert, setConnectionAlert] = useState<ConnectionAlert | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [showOnlyLabs, setShowOnlyLabs] = useState(false);
+  const [bandwidthDrafts, setBandwidthDrafts] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    document.documentElement.classList.add('dark');
+    document.body.classList.add('dark');
+    document.documentElement.style.colorScheme = 'dark';
+    document.body.style.backgroundColor = '#0A0A0B';
+
+    return () => {
+      document.documentElement.classList.remove('dark');
+      document.body.classList.remove('dark');
+      document.documentElement.style.colorScheme = '';
+      document.body.style.backgroundColor = '';
+    };
+  }, []);
 
   const clearSession = () => {
     setIsAuthenticated(false);
@@ -192,6 +239,18 @@ export default function App() {
     });
   };
 
+  const syncBandwidthDrafts = (ifaces: InterfaceStatus[]) => {
+    setBandwidthDrafts(prev => {
+      const next = { ...prev };
+      ifaces.forEach(iface => {
+        if (!(iface.id in next)) {
+          next[iface.id] = iface.bandwidthLimitMbps ? formatBandwidthMbps(iface.bandwidthLimitMbps) : '';
+        }
+      });
+      return next;
+    });
+  };
+
   const fetchData = async () => {
     if (!isAuthenticated || !sessionToken) return;
     try {
@@ -240,6 +299,7 @@ export default function App() {
       if (ifacesRes.status === 'fulfilled') {
         setInterfaces(ifacesRes.value);
         ensureTrafficHistory(ifacesRes.value);
+        syncBandwidthDrafts(ifacesRes.value);
         if (trafficRes.status === 'fulfilled') {
           appendTrafficSamples(trafficRes.value, ifacesRes.value);
         }
@@ -339,22 +399,89 @@ export default function App() {
     }
   };
 
-  const filteredInterfaces = interfaces.filter(iface => {
-    const matchesSearch = iface.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          (iface.comment && iface.comment.toLowerCase().includes(searchQuery.toLowerCase()));
-    
-    const isLab = (item: InterfaceStatus) => {
-      const name = item.name.toLowerCase();
-      const comment = (item.comment || '').toLowerCase();
-      return name.includes('lab') || 
-             name.includes('vlan') || 
-             name.startsWith('4') ||
-             comment.includes('lab');
-    };
-    
-    if (showOnlyLabs) return isLab(iface) && matchesSearch;
-    return matchesSearch;
-  });
+  const saveBandwidth = async (iface: InterfaceStatus) => {
+    const draft = bandwidthDrafts[iface.id] ?? '';
+    const bandwidthMbps = Number(draft);
+
+    if (!Number.isFinite(bandwidthMbps) || bandwidthMbps <= 0) {
+      setError(`Bandwidth untuk ${iface.name} harus lebih dari 0 Mbps.`);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const res = await authorizedFetch(`/api/interfaces/${encodeURIComponent(iface.id)}/bandwidth`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ bandwidthMbps }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setInterfaces(prev => prev.map(item => (
+          item.id === iface.id
+            ? {
+                ...item,
+                bandwidthLimitMbps: data.bandwidthLimitMbps,
+                bandwidthLimit: data.bandwidthLimit,
+                bandwidthEnabled: data.bandwidthEnabled,
+                queueTreeId: data.queueTreeId ?? item.queueTreeId,
+                queueTreeName: data.queueTreeName ?? item.queueTreeName,
+                hasQueueTree: true,
+              }
+            : item
+        )));
+        setBandwidthDrafts(prev => ({
+          ...prev,
+          [iface.id]: formatBandwidthMbps(data.bandwidthLimitMbps),
+        }));
+        fetchData();
+      } else {
+        const data = await res.json().catch(() => null);
+        setError(data?.error || `Gagal mengubah bandwidth ${iface.name}.`);
+      }
+    } catch (err: any) {
+      setError(`Gagal mengubah bandwidth ${iface.name}: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const filteredInterfaces = interfaces
+    .filter(iface => {
+      const matchesSearch = iface.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                            (iface.comment && iface.comment.toLowerCase().includes(searchQuery.toLowerCase()));
+      
+      const isLab = (item: InterfaceStatus) => {
+        const normalizedName = normalizeLabName(item.name);
+        const comment = (item.comment || '').toLowerCase();
+        return labsOnlyOrderIndex.has(normalizedName) ||
+               normalizedName.includes('lab') || 
+               normalizedName.includes('vlan') || 
+               normalizedName.startsWith('4') ||
+               comment.includes('lab');
+      };
+      
+      if (showOnlyLabs) return isLab(iface) && matchesSearch;
+      return matchesSearch;
+    })
+    .sort((left, right) => {
+      if (!showOnlyLabs) return 0;
+
+      const leftIndex = labsOnlyOrderIndex.get(normalizeLabName(left.name));
+      const rightIndex = labsOnlyOrderIndex.get(normalizeLabName(right.name));
+
+      if (leftIndex !== undefined && rightIndex !== undefined) {
+        return leftIndex - rightIndex;
+      }
+
+      if (leftIndex !== undefined) return -1;
+      if (rightIndex !== undefined) return 1;
+
+      return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' });
+    });
 
   const activeConnectionAlertStyle = connectionAlert ? connectionAlertStyles[connectionAlert.type] : null;
 
@@ -714,9 +841,65 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className="flex items-center justify-between gap-3 pt-2">
+                      <div className="rounded-2xl border border-gray-100 dark:border-white/5 bg-gray-50/80 dark:bg-white/[0.03] p-3 space-y-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-[8px] font-black uppercase tracking-[0.18em] text-gray-400">Queue Tree</p>
+                            <p className="text-[11px] font-black uppercase tracking-wider text-white truncate">
+                              {iface.hasQueueTree ? (iface.queueTreeName || iface.name) : 'Queue Missing'}
+                            </p>
+                          </div>
+                          <div className={`px-2 py-1 rounded-md text-[8px] font-black uppercase border shrink-0 ${
+                            iface.hasQueueTree
+                              ? (iface.bandwidthEnabled
+                                  ? 'border-emerald-500/20 text-emerald-400 bg-emerald-500/10'
+                                  : 'border-amber-500/20 text-amber-400 bg-amber-500/10')
+                              : 'border-gray-500/20 text-gray-400 bg-gray-500/10'
+                          }`}>
+                            {iface.hasQueueTree ? (iface.bandwidthEnabled ? 'Queue On' : 'Queue Off') : 'No Queue'}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-[8px] font-black uppercase tracking-[0.18em] text-gray-400">Current Limit</p>
+                            <p className="text-sm font-black tracking-tight text-white">
+                              {iface.hasQueueTree ? `${formatBandwidthMbps(iface.bandwidthLimitMbps)} Mbps` : '--'}
+                            </p>
+                          </div>
+                          <div className="text-right min-w-0">
+                            <p className="text-[8px] font-black uppercase tracking-[0.18em] text-gray-400">Teacher</p>
+                            <p className="text-[10px] font-bold text-gray-300 dark:text-gray-500 truncate">
+                              {iface.teacherIp || '--'}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            min="1"
+                            step="1"
+                            inputMode="numeric"
+                            value={bandwidthDrafts[iface.id] ?? ''}
+                            onChange={(e) => setBandwidthDrafts(prev => ({ ...prev, [iface.id]: e.target.value }))}
+                            placeholder="Mbps"
+                            disabled={!iface.hasQueueTree}
+                            className="flex-1 min-w-0 px-3 py-2 bg-white dark:bg-[#141416] border border-gray-200 dark:border-white/10 rounded-xl text-[11px] font-bold text-white placeholder:text-gray-500 outline-none focus:ring-2 focus:ring-blue-500/20 disabled:opacity-40"
+                          />
+                          <button
+                            onClick={() => saveBandwidth(iface)}
+                            disabled={!iface.hasQueueTree || loading}
+                            className="px-3 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest bg-blue-600 hover:bg-blue-700 text-white shadow-md transition-all shrink-0 disabled:opacity-40"
+                          >
+                            Save BW
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-3 pt-1">
                         <span className="text-[9px] font-bold text-gray-300 dark:text-gray-600 uppercase tracking-tighter truncate min-w-0">
-                          {iface.teacherIp ? `Teacher ${iface.teacherIp}` : (iface.comment || '-- No Comm --')}
+                          {iface.comment || '-- No Comm --'}
                         </span>
                         <button
                           onClick={() => toggleInterface(iface.id, iface.enabled)}
