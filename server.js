@@ -31,6 +31,7 @@ const ROUTER_API_PORT = Number(process.env.ROUTER_API_PORT || (ROUTER_API_TLS ? 
 const ROUTER_TIMEOUT_MS = Number(process.env.ROUTER_TIMEOUT_MS || 8000);
 const WAN_INTERFACE_LIST = process.env.WAN_INTERFACE_LIST || 'WAN';
 const WAN_INTERFACE = process.env.WAN_INTERFACE || '';
+const UPLINK_INTERFACE = (process.env.UPLINK_INTERFACE || WAN_INTERFACE || 'ether2-backboneUKSW').trim();
 const NAT_BLOCK_COMMENT_PREFIX = process.env.LABGUARD_NAT_BLOCK_PREFIX || 'LABGUARD_NO_INTERNET';
 const NAT_PLACE_BEFORE = process.env.LABGUARD_NAT_PLACE_BEFORE || '0';
 const LAB_TEACHER_HOST_SUFFIX = Number(process.env.LAB_TEACHER_HOST_SUFFIX || 2);
@@ -477,6 +478,29 @@ function toRouterNumber(value) {
 function toMbps(bitsPerSecond) {
     return Number((bitsPerSecond / 1_000_000).toFixed(2));
 }
+async function monitorInterfaceTraffic(client, ifaceName, fallbackId = ifaceName) {
+    try {
+        const rows = await client.execute('/interface/monitor-traffic', {
+            interface: ifaceName,
+            once: '',
+        });
+        const traffic = rows[0] || {};
+        return {
+            id: fallbackId,
+            name: ifaceName,
+            rxRate: Number(traffic['rx-bits-per-second'] || 0),
+            txRate: Number(traffic['tx-bits-per-second'] || 0),
+        };
+    }
+    catch {
+        return {
+            id: fallbackId,
+            name: ifaceName,
+            rxRate: 0,
+            txRate: 0,
+        };
+    }
+}
 function findQueueTreeRule(queueRows, iface) {
     const labCode = extractLabCode(iface.name) || extractLabCode(iface.comment);
     if (!labCode)
@@ -558,22 +582,7 @@ async function getTrafficForInterfaces(ifaces) {
     return withRouter(async (client) => {
         const trafficRows = [];
         for (const iface of ifaces) {
-            try {
-                const rows = await client.execute('/interface/monitor-traffic', {
-                    interface: iface.name,
-                    once: '',
-                });
-                const traffic = rows[0] || {};
-                trafficRows.push({
-                    id: iface.id,
-                    name: iface.name,
-                    rxRate: Number(traffic['rx-bits-per-second'] || 0),
-                    txRate: Number(traffic['tx-bits-per-second'] || 0),
-                });
-            }
-            catch {
-                trafficRows.push({ id: iface.id, name: iface.name, rxRate: 0, txRate: 0 });
-            }
+            trafficRows.push(await monitorInterfaceTraffic(client, iface.name, iface.id));
         }
         return trafficRows;
     });
@@ -585,6 +594,17 @@ function mockTraffic() {
         rxRate: iface.enabled ? Math.floor(Math.random() * 3_000_000) + 80_000 : 0,
         txRate: iface.enabled ? Math.floor(Math.random() * 900_000) + 20_000 : 0,
     }));
+}
+function mockUplinkTraffic() {
+    return {
+        id: 'uplink',
+        name: UPLINK_INTERFACE || 'ether2-backboneUKSW',
+        rxRate: Math.floor(Math.random() * 180_000_000) + 40_000_000,
+        txRate: Math.floor(Math.random() * 120_000_000) + 20_000_000,
+    };
+}
+async function getUplinkTraffic() {
+    return withRouter((client) => monitorInterfaceTraffic(client, UPLINK_INTERFACE || 'ether2-backboneUKSW', 'uplink'));
 }
 async function setInternetAccessByNat(interfaceId, internetEnabled) {
     return withRouter(async (client) => {
@@ -769,6 +789,17 @@ app.get('/api/interfaces/traffic', requireSession, async (_req, res) => {
     try {
         const ifaces = await getLabInterfaces();
         res.json(await getTrafficForInterfaces(ifaces));
+    }
+    catch (error) {
+        res.status(500).json({ error: formatRouterError(error) });
+    }
+});
+app.get('/api/router/uplink-traffic', requireSession, async (_req, res) => {
+    if (!HAS_CONFIG) {
+        return res.json(mockUplinkTraffic());
+    }
+    try {
+        res.json(await getUplinkTraffic());
     }
     catch (error) {
         res.status(500).json({ error: formatRouterError(error) });
