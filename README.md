@@ -19,7 +19,7 @@ Sistem ini tidak mematikan VLAN lab. Yang dikontrol adalah akses internet melalu
 - Access Control per VLAN lab
 - Status `Students On / Students Off` berdasarkan NAT mahasiswa di router
 - Status `Teacher On / Teacher Off` berdasarkan NAT pengajar di router
-- Monitoring uplink `backboneUKSW` atau interface uplink lain dari `.env`
+- Monitoring uplink `out inet` atau interface uplink lain dari `.env`
 - Monitoring traffic interface lab
 - Pengaturan bandwidth `queue tree` per lab dalam satuan Mbps
 - Dukungan polling ringan:
@@ -121,7 +121,7 @@ LAB_INTERFACE_MATCH="vlan"
 
 WAN_INTERFACE_LIST=""
 WAN_INTERFACE=""
-UPLINK_INTERFACE="backboneUKSW"
+UPLINK_INTERFACE="out inet"
 
 LABGUARD_NAT_BLOCK_PREFIX="FTI"
 LABGUARD_NAT_PLACE_BEFORE="0"
