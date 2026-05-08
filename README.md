@@ -285,4 +285,4 @@ Cek apakah queue tree lab memang ada di router dan naming-nya masih sesuai pola 
 
 ## License
 
-new Date().getFullYear(), "Developed by: NCP-Laboran Internal project untuk kebutuhan operasional Lab FTI UKSW.
+©2026, "Developed by: NCP-Laboran Internal project untuk kebutuhan operasional Lab FTI UKSW.
