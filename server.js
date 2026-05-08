@@ -2,6 +2,7 @@ import cors from 'cors';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import express from 'express';
+import fs from 'fs';
 import net from 'net';
 import os from 'os';
 import path from 'path';
@@ -16,10 +17,29 @@ const PORT = Number(process.env.PORT || 3000);
 const SERVER_HOST = process.env.SERVER_HOST || '0.0.0.0';
 app.use(cors());
 app.use(express.json());
+const ENV_PATH = path.join(__dirname, '.env');
+function upsertEnvValue(key, value) {
+    const serialized = `${key}="${value}"`;
+    const existing = fs.existsSync(ENV_PATH) ? fs.readFileSync(ENV_PATH, 'utf8') : '';
+    const pattern = new RegExp(`^${key}=.*$`, 'm');
+    const nextContent = pattern.test(existing)
+        ? existing.replace(pattern, serialized)
+        : `${existing.trimEnd()}\n${serialized}\n`.replace(/^\n/, '');
+    fs.writeFileSync(ENV_PATH, nextContent, 'utf8');
+}
+function ensureSessionSecret() {
+    const existingSecret = String(process.env.SESSION_SECRET || '').trim();
+    if (existingSecret)
+        return existingSecret;
+    const generatedSecret = crypto.randomBytes(48).toString('hex');
+    process.env.SESSION_SECRET = generatedSecret;
+    upsertEnvValue('SESSION_SECRET', generatedSecret);
+    return generatedSecret;
+}
 const DEFAULT_ADMIN_PIN = '123456';
 const configuredPin = process.env.ADMIN_PIN || process.env.ADMIN_PASS || DEFAULT_ADMIN_PIN;
 const adminPin = /^\d{1,6}$/.test(configuredPin) ? configuredPin : DEFAULT_ADMIN_PIN;
-const SESSION_SECRET = process.env.SESSION_SECRET || `labguard-session-${adminPin}`;
+const SESSION_SECRET = ensureSessionSecret();
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_HOURS || 12) * 60 * 60 * 1000;
 const REMEMBER_SESSION_TTL_MS = Number(process.env.REMEMBER_SESSION_DAYS || 30) * 24 * 60 * 60 * 1000;
 const ROUTER_IP = (process.env.ROUTER_IP || '').trim();
@@ -58,19 +78,19 @@ function getPublicServerHost() {
     return getDeviceIp();
 }
 let mockInterfaces = [
-    { id: '*10', name: 'lab 467', enabled: true, running: true, comment: 'VLAN 67 - Lab Jaringan Utama', type: 'vlan', interfaceEnabled: true, internetBlocked: false, queueTreeId: '*q10', queueTreeName: '467', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true },
-    { id: '*11', name: 'lab 461', enabled: false, running: true, comment: 'VLAN 61 - Lab Pemrograman', type: 'vlan', interfaceEnabled: true, internetBlocked: true, queueTreeId: '*q11', queueTreeName: '461', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true },
-    { id: '*12', name: 'lab 464', enabled: true, running: true, comment: 'VLAN 64 - Lab Sistem Operasi', type: 'vlan', interfaceEnabled: true, internetBlocked: false, queueTreeId: '*q12', queueTreeName: '464', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true },
-    { id: '*13', name: 'vlan-management', enabled: true, running: true, comment: 'VLAN 10 - Management Core', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false },
-    { id: '*14', name: 'lab 465', enabled: true, running: true, comment: 'VLAN 65 - Lab IoT & Robotik', type: 'vlan', interfaceEnabled: true, internetBlocked: false, queueTreeId: '*q14', queueTreeName: '465', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true },
-    { id: '*15', name: 'lab 462', enabled: true, running: true, comment: 'VLAN 62 - Lab Multimedia', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false },
-    { id: '*16', name: 'lab 463', enabled: true, running: true, comment: 'VLAN 63 - Lab Basis Data', type: 'vlan', interfaceEnabled: true, internetBlocked: false, queueTreeId: '*q16', queueTreeName: '463', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true },
-    { id: '*17', name: 'lab 466', enabled: false, running: true, comment: 'VLAN 66 - Lab Kecerdasan Buatan', type: 'vlan', interfaceEnabled: true, internetBlocked: true, bandwidthEnabled: false, hasQueueTree: false },
-    { id: '*18', name: 'lab 468', enabled: true, running: true, comment: 'VLAN 68 - Lab Keamanan Siber', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false },
-    { id: '*19', name: 'lab 469', enabled: true, running: true, comment: 'VLAN 69 - Lab Cloud Computing', type: 'vlan', interfaceEnabled: true, internetBlocked: false, queueTreeId: '*q19', queueTreeName: '469', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true },
-    { id: '*20', name: 'vlan-server-farm', enabled: true, running: true, comment: 'VLAN 100 - Data Center Local', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false },
-    { id: '*21', name: 'vlan-wifi-mhs', enabled: true, running: true, comment: 'VLAN 200 - Hotspot Mahasiswa', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false },
-    { id: '*22', name: 'vlan-wifi-dosen', enabled: true, running: true, comment: 'VLAN 210 - Hotspot Staff & Dosen', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false },
+    { id: '*10', name: 'lab 467', enabled: true, running: true, comment: 'VLAN 67 - Lab Jaringan Utama', type: 'vlan', interfaceEnabled: true, internetBlocked: false, queueTreeId: '*q10', queueTreeName: '467', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true, teacherIp: '172.67.17.2', teacherInternetEnabled: true },
+    { id: '*11', name: 'lab 461', enabled: false, running: true, comment: 'VLAN 61 - Lab Pemrograman', type: 'vlan', interfaceEnabled: true, internetBlocked: true, queueTreeId: '*q11', queueTreeName: '461', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true, teacherIp: '172.67.11.2', teacherInternetEnabled: false },
+    { id: '*12', name: 'lab 464', enabled: true, running: true, comment: 'VLAN 64 - Lab Sistem Operasi', type: 'vlan', interfaceEnabled: true, internetBlocked: false, queueTreeId: '*q12', queueTreeName: '464', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true, teacherIp: '172.67.13.2', teacherInternetEnabled: true },
+    { id: '*13', name: 'vlan-management', enabled: true, running: true, comment: 'VLAN 10 - Management Core', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false, teacherInternetEnabled: false },
+    { id: '*14', name: 'lab 465', enabled: true, running: true, comment: 'VLAN 65 - Lab IoT & Robotik', type: 'vlan', interfaceEnabled: true, internetBlocked: false, queueTreeId: '*q14', queueTreeName: '465', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true, teacherIp: '172.67.14.2', teacherInternetEnabled: true },
+    { id: '*15', name: 'lab 462', enabled: true, running: true, comment: 'VLAN 62 - Lab Multimedia', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false, teacherIp: '172.67.12.2', teacherInternetEnabled: true },
+    { id: '*16', name: 'lab 463', enabled: true, running: true, comment: 'VLAN 63 - Lab Basis Data', type: 'vlan', interfaceEnabled: true, internetBlocked: false, queueTreeId: '*q16', queueTreeName: '463', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true, teacherIp: '172.67.12.66', teacherInternetEnabled: true },
+    { id: '*17', name: 'lab 466', enabled: false, running: true, comment: 'VLAN 66 - Lab Kecerdasan Buatan', type: 'vlan', interfaceEnabled: true, internetBlocked: true, bandwidthEnabled: false, hasQueueTree: false, teacherIp: '172.67.15.2', teacherInternetEnabled: false },
+    { id: '*18', name: 'lab 468', enabled: true, running: true, comment: 'VLAN 68 - Lab Keamanan Siber', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false, teacherIp: '172.67.18.2', teacherInternetEnabled: true },
+    { id: '*19', name: 'lab 469', enabled: true, running: true, comment: 'VLAN 69 - Lab Cloud Computing', type: 'vlan', interfaceEnabled: true, internetBlocked: false, queueTreeId: '*q19', queueTreeName: '469', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true, teacherIp: '172.67.19.2', teacherInternetEnabled: true },
+    { id: '*20', name: 'vlan-server-farm', enabled: true, running: true, comment: 'VLAN 100 - Data Center Local', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false, teacherInternetEnabled: false },
+    { id: '*21', name: 'vlan-wifi-mhs', enabled: true, running: true, comment: 'VLAN 200 - Hotspot Mahasiswa', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false, teacherInternetEnabled: false },
+    { id: '*22', name: 'vlan-wifi-dosen', enabled: true, running: true, comment: 'VLAN 210 - Hotspot Staff & Dosen', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false, teacherInternetEnabled: false },
 ];
 let localLogs = [
     { id: 1, time: '20:14:02', event: 'Interface [lab 467] state changed to UP', type: 'info' },
@@ -438,6 +458,18 @@ function findStudentNatRule(rules, subnetCidr) {
             !comment.includes('pengajar'));
     });
 }
+function findTeacherNatRule(rules, teacherIp) {
+    if (!teacherIp)
+        return undefined;
+    return rules.find((rule) => {
+        const action = String(rule.action || '').toLowerCase();
+        const chain = String(rule.chain || '').toLowerCase();
+        return (chain === 'srcnat' &&
+            (action === 'src-nat' || action === 'masquerade') &&
+            String(rule['src-address'] || '') === teacherIp &&
+            hasMatchingWanTarget(rule));
+    });
+}
 function buildInterfaceAddressMap(rows) {
     const addressMap = new Map();
     for (const row of rows) {
@@ -537,43 +569,48 @@ async function runRouterCommand(command, options) {
     return withRouter((client) => client.execute(command, options));
 }
 async function getLabInterfaces() {
-    const rows = await runRouterCommand('/interface/print', {
-        '.proplist': '.id,name,disabled,type,comment,running',
-    });
-    const addressRows = await runRouterCommand('/ip/address/print', {
-        '.proplist': 'interface,address,disabled',
-    });
-    const natRules = await runRouterCommand('/ip/firewall/nat/print', {
-        '.proplist': '.id,chain,action,disabled,comment,in-interface,out-interface,out-interface-list,src-address',
-    });
-    const queueTreeRows = await runRouterCommand('/queue/tree/print', {
-        '.proplist': '.id,name,parent,packet-mark,limit-at,max-limit,disabled,comment',
-    });
-    const addressMap = buildInterfaceAddressMap(addressRows);
-    return rows.filter(isManagedInterface).map((row) => {
-        const iface = mapInterface(row);
-        const interfaceCidr = addressMap.get(iface.name);
-        const subnetCidr = networkCidrFromCidr(interfaceCidr);
-        const studentNatRule = findStudentNatRule(natRules, subnetCidr || undefined);
-        const natBlockRule = findNatBlockRule(natRules, iface.name);
-        const teacherIp = teacherIpFromCidr(interfaceCidr);
-        const queueTreeRule = findQueueTreeRule(queueTreeRows, iface);
-        const studentsEnabled = studentNatRule ? isTruthyRouterDisabled(studentNatRule.disabled) === false : !natBlockRule;
-        const internetBlocked = studentNatRule ? isTruthyRouterDisabled(studentNatRule.disabled) : !!natBlockRule && !isTruthyRouterDisabled(natBlockRule.disabled);
-        const bandwidthLimit = queueTreeRule ? toRouterNumber(queueTreeRule['max-limit']) : 0;
-        return {
-            ...iface,
-            enabled: studentsEnabled,
-            internetBlocked,
-            natRuleId: studentNatRule?.['.id'] || natBlockRule?.['.id'],
-            teacherIp: teacherIp || undefined,
-            queueTreeId: queueTreeRule?.['.id'],
-            queueTreeName: queueTreeRule?.name,
-            bandwidthEnabled: queueTreeRule ? !isTruthyRouterDisabled(queueTreeRule.disabled) : false,
-            bandwidthLimit: queueTreeRule ? bandwidthLimit : undefined,
-            bandwidthLimitMbps: queueTreeRule ? toMbps(bandwidthLimit) : undefined,
-            hasQueueTree: !!queueTreeRule,
-        };
+    return withRouter(async (client) => {
+        const rows = await client.execute('/interface/print', {
+            '.proplist': '.id,name,disabled,type,comment,running',
+        });
+        const addressRows = await client.execute('/ip/address/print', {
+            '.proplist': 'interface,address,disabled',
+        });
+        const natRules = await client.execute('/ip/firewall/nat/print', {
+            '.proplist': '.id,chain,action,disabled,comment,in-interface,out-interface,out-interface-list,src-address',
+        });
+        const queueTreeRows = await client.execute('/queue/tree/print', {
+            '.proplist': '.id,name,parent,packet-mark,limit-at,max-limit,disabled,comment',
+        });
+        const addressMap = buildInterfaceAddressMap(addressRows);
+        const managedInterfaces = rows.filter(isManagedInterface).map((row) => {
+            const iface = mapInterface(row);
+            const interfaceCidr = addressMap.get(iface.name);
+            const subnetCidr = networkCidrFromCidr(interfaceCidr);
+            const studentNatRule = findStudentNatRule(natRules, subnetCidr || undefined);
+            const teacherIp = teacherIpFromCidr(interfaceCidr);
+            const teacherNatRule = findTeacherNatRule(natRules, teacherIp || undefined);
+            const natBlockRule = findNatBlockRule(natRules, iface.name);
+            const queueTreeRule = findQueueTreeRule(queueTreeRows, iface);
+            const studentsEnabled = studentNatRule ? isTruthyRouterDisabled(studentNatRule.disabled) === false : !natBlockRule;
+            const internetBlocked = studentNatRule ? isTruthyRouterDisabled(studentNatRule.disabled) : !!natBlockRule && !isTruthyRouterDisabled(natBlockRule.disabled);
+            const bandwidthLimit = queueTreeRule ? toRouterNumber(queueTreeRule['max-limit']) : 0;
+            return {
+                ...iface,
+                enabled: studentsEnabled,
+                internetBlocked,
+                natRuleId: studentNatRule?.['.id'] || natBlockRule?.['.id'],
+                teacherIp: teacherIp || undefined,
+                queueTreeId: queueTreeRule?.['.id'],
+                queueTreeName: queueTreeRule?.name,
+                bandwidthEnabled: queueTreeRule ? !isTruthyRouterDisabled(queueTreeRule.disabled) : false,
+                bandwidthLimit: queueTreeRule ? bandwidthLimit : undefined,
+                bandwidthLimitMbps: queueTreeRule ? toMbps(bandwidthLimit) : undefined,
+                hasQueueTree: !!queueTreeRule,
+                teacherInternetEnabled: teacherNatRule ? !isTruthyRouterDisabled(teacherNatRule.disabled) : false,
+            };
+        });
+        return managedInterfaces;
     });
 }
 async function getTrafficForInterfaces(ifaces) {
