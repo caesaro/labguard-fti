@@ -1,6 +1,6 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 import React, { useEffect, useRef, useState } from 'react';
-import { WifiOff, ShieldCheck, RefreshCcw, Activity, Settings as SettingsIcon, AlertCircle, Layers, Search, CheckCircle2, XCircle, Unlock, Lock, LogIn, KeyRound, Eye, EyeOff, ShieldAlert } from 'lucide-react';
+import { WifiOff, ShieldCheck, RefreshCcw, Activity, Settings as SettingsIcon, AlertCircle, Layers, Search, CheckCircle2, XCircle, Unlock, Lock, LogIn, KeyRound, Eye, EyeOff, ShieldAlert, ChevronDown } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { AreaChart, Area, ResponsiveContainer } from 'recharts';
 import mikrotikLogo from './assets/mikrotik-logo.svg';
@@ -145,8 +145,8 @@ export default function App() {
     const [selectedPolicyList, setSelectedPolicyList] = useState('');
     const [policyEntries, setPolicyEntries] = useState([]);
     const [policyEntryDrafts, setPolicyEntryDrafts] = useState({});
-    const [newPolicyEntry, setNewPolicyEntry] = useState({ address: '', comment: '' });
-    const [newPolicyList, setNewPolicyList] = useState({ name: '', type: 'blacklist', entriesText: '' });
+    const [newPolicyEntry, setNewPolicyEntry] = useState({ address: '', comment: '', strictBlacklist: true });
+    const [newPolicyList, setNewPolicyList] = useState({ name: '', type: 'blacklist', entriesText: '', strictBlacklist: true });
     const [policyManagerLoading, setPolicyManagerLoading] = useState(false);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -655,6 +655,7 @@ export default function App() {
                     listName: selectedPolicyList,
                     address: newPolicyEntry.address.trim(),
                     comment: newPolicyEntry.comment.trim(),
+                    strictBlacklist: Boolean(newPolicyEntry.strictBlacklist),
                 }),
             });
             const data = await response.json();
@@ -664,7 +665,7 @@ export default function App() {
             const entries = Array.isArray(data.entries) ? data.entries : [];
             setPolicyEntries(entries);
             syncPolicyEntryDrafts(entries);
-            setNewPolicyEntry({ address: '', comment: '' });
+            setNewPolicyEntry((prev) => ({ address: '', comment: '', strictBlacklist: prev.strictBlacklist }));
             fetchSitePolicies();
         }
         catch (err) {
@@ -782,13 +783,13 @@ export default function App() {
             const response = await authorizedFetch('/api/site-policies/create-list', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ listName, type, initialEntries }),
+                body: JSON.stringify({ listName, type, initialEntries, strictBlacklist: Boolean(newPolicyList.strictBlacklist) }),
             });
             const data = await response.json();
             if (!response.ok) {
                 throw new Error(data?.error || 'Gagal membuat list baru.');
             }
-            setNewPolicyList({ name: '', type: 'blacklist', entriesText: '' });
+            setNewPolicyList((prev) => ({ name: '', type: 'blacklist', entriesText: '', strictBlacklist: prev.strictBlacklist }));
             await fetchSitePolicies();
             setPolicyManagerType(type);
             setTimeout(() => setSelectedPolicyList(listName), 100);
@@ -1029,7 +1030,7 @@ export default function App() {
                         <div className="px-2 py-1 rounded-md text-[8px] font-black uppercase border border-blue-500/20 text-blue-400 bg-blue-500/10">
                           {filteredPolicyEntries.length} Entries
                         </div>
-                        <span className="text-lg font-black text-gray-400">{policyAccordion.manager ? '−' : '+'}</span>
+                        <ChevronDown size={18} className={`text-gray-400 transition-transform ${policyAccordion.manager ? 'rotate-180' : ''}`}/>
                       </div>
                     </button>
 
@@ -1044,6 +1045,10 @@ export default function App() {
                             </select>
                           </div>
                           <textarea value={newPolicyList.entriesText} onChange={(e) => setNewPolicyList((prev) => ({ ...prev, entriesText: e.target.value }))} placeholder={"Initial entries (opsional, satu per baris)\ncth:\nsteam.com\nepicgames.com"} rows={3} className="w-full px-4 py-3 bg-white dark:bg-[#141416] border border-gray-200 dark:border-white/10 rounded-2xl text-[11px] font-bold text-white placeholder:text-gray-500 outline-none focus:ring-2 focus:ring-blue-500/20 resize-none"/>
+                          {newPolicyList.type === 'blacklist' && (<label className="flex items-center gap-3 px-1 cursor-pointer group">
+                              <input type="checkbox" checked={newPolicyList.strictBlacklist} onChange={(e) => setNewPolicyList((prev) => ({ ...prev, strictBlacklist: e.target.checked }))} className="w-4 h-4 rounded border-white/10 bg-[#141416] text-blue-600 focus:ring-blue-500/20"/>
+                              <span className="text-[10px] font-black uppercase tracking-[0.14em] text-gray-300">Strict Website Block (TLS Host)</span>
+                            </label>)}
                           <button onClick={handleCreatePolicyList} disabled={policyManagerLoading || !newPolicyList.name.trim()} className="px-5 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest bg-blue-600 hover:bg-blue-700 text-white shadow-md transition-all disabled:opacity-40">
                             Create List
                           </button>
@@ -1077,6 +1082,13 @@ export default function App() {
                               Add
                             </button>
                           </div>
+                          {policyManagerType === 'blacklist' && (<label className="flex items-center gap-3 px-1 cursor-pointer group">
+                              <input type="checkbox" checked={newPolicyEntry.strictBlacklist} onChange={(e) => setNewPolicyEntry((prev) => ({ ...prev, strictBlacklist: e.target.checked }))} disabled={!selectedPolicyList} className="w-4 h-4 rounded border-white/10 bg-[#141416] text-blue-600 focus:ring-blue-500/20 disabled:opacity-40"/>
+                              <span className="text-[10px] font-black uppercase tracking-[0.14em] text-gray-300">Strict Website Block (TLS Host)</span>
+                            </label>)}
+                          <p className="text-[9px] font-bold text-gray-500">
+                            Untuk domain web, sistem otomatis menambahkan host root dan versi <span className="text-gray-300">www</span> jika relevan. Saat mode strict aktif, sistem juga menambah rule <span className="text-gray-300">TLS host</span> supaya block lebih susah lolos.
+                          </p>
                         </div>
 
                         {selectedPolicyList ? (<div className="space-y-3">
@@ -1126,7 +1138,7 @@ export default function App() {
                         <div className="px-2 py-1 rounded-md text-[8px] font-black uppercase border border-blue-500/20 text-blue-400 bg-blue-500/10">
                           {filteredWhitelistRules.length} Rules
                         </div>
-                        <span className="text-lg font-black text-gray-400">{policyAccordion.whitelist ? '−' : '+'}</span>
+                        <ChevronDown size={18} className={`text-gray-400 transition-transform ${policyAccordion.whitelist ? 'rotate-180' : ''}`}/>
                       </div>
                     </button>
 
@@ -1158,7 +1170,7 @@ export default function App() {
                         <div className="px-2 py-1 rounded-md text-[8px] font-black uppercase border border-blue-500/20 text-blue-400 bg-blue-500/10">
                           {filteredBlacklistResources.length} Rules
                         </div>
-                        <span className="text-lg font-black text-gray-400">{policyAccordion.blacklist ? '−' : '+'}</span>
+                        <ChevronDown size={18} className={`text-gray-400 transition-transform ${policyAccordion.blacklist ? 'rotate-180' : ''}`}/>
                       </div>
                     </button>
 

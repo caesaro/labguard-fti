@@ -53,6 +53,7 @@ const WAN_INTERFACE_LIST = process.env.WAN_INTERFACE_LIST || 'WAN';
 const WAN_INTERFACE = process.env.WAN_INTERFACE || '';
 const UPLINK_INTERFACE = (process.env.UPLINK_INTERFACE || WAN_INTERFACE || 'ether2-backboneUKSW').trim();
 const NAT_BLOCK_COMMENT_PREFIX = process.env.LABGUARD_NAT_BLOCK_PREFIX || 'LABGUARD_NO_INTERNET';
+const STRICT_POLICY_COMMENT_PREFIX = 'LABGUARD_TLS_BLOCK';
 const NAT_PLACE_BEFORE = process.env.LABGUARD_NAT_PLACE_BEFORE || '0';
 const LAB_TEACHER_HOST_SUFFIX = Number(process.env.LAB_TEACHER_HOST_SUFFIX || 2);
 const LAB_INTERFACE_TERMS = (process.env.LAB_INTERFACE_MATCH || 'lab,vlan')
@@ -810,6 +811,100 @@ function mapAddressListEntry(row) {
         disabled: isTruthyDisabled(row.disabled),
     };
 }
+function isIpv4Address(value) {
+    return /^(\d{1,3}\.){3}\d{1,3}$/.test(String(value || '').trim());
+}
+function isLikelyHostname(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized || normalized.includes('/') || normalized.includes(' ') || normalized.includes('*'))
+        return false;
+    if (isIpv4Address(normalized))
+        return false;
+    return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(normalized);
+}
+function buildPolicyTargets(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!isLikelyHostname(normalized))
+        return [String(value || '').trim()].filter(Boolean);
+    const rootHost = normalized.replace(/^www\./, '');
+    return [...new Set([rootHost, `www.${rootHost}`])];
+}
+function buildStrictPolicyTargets(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!isLikelyHostname(normalized))
+        return [];
+    const rootHost = normalized.replace(/^www\./, '');
+    return [...new Set([rootHost, `*.${rootHost}`])];
+}
+function strictPolicyRuleComment(listName, target) {
+    return `${STRICT_POLICY_COMMENT_PREFIX} ${listName} ${target}`;
+}
+function hasStrictPolicyRuleForTarget(filterRows, listName, target) {
+    const expectedComment = strictPolicyRuleComment(listName, target);
+    return filterRows.some((row) => String(row.comment || '') === expectedComment);
+}
+function findStrictPolicyRuleIds(filterRows, listName, value) {
+    return filterRows
+        .filter((row) => buildStrictPolicyTargets(value).some((target) => String(row.comment || '') === strictPolicyRuleComment(listName, target)))
+        .map((row) => String(row['.id'] || row.id || ''))
+        .filter(Boolean);
+}
+function findStrictPolicyPlaceBefore(filterRows) {
+    const firstBlockRule = filterRows.find((row) => isBlockPolicyRule(row));
+    return firstBlockRule?.['.id'];
+}
+async function addStrictBlacklistRules(client, listName, value) {
+    const strictTargets = buildStrictPolicyTargets(value);
+    if (!strictTargets.length)
+        return 0;
+    const filterRows = await client.execute('/ip/firewall/filter/print', {
+        '.proplist': '.id,chain,action,disabled,comment,tls-host,layer7-protocol,src-address-list,dst-address-list,content',
+    });
+    const placeBefore = findStrictPolicyPlaceBefore(filterRows);
+    let addedCount = 0;
+    for (const target of strictTargets) {
+        if (hasStrictPolicyRuleForTarget(filterRows, listName, target))
+            continue;
+        const params = {
+            chain: 'forward',
+            action: 'drop',
+            'tls-host': target,
+            comment: strictPolicyRuleComment(listName, target),
+            disabled: 'no',
+        };
+        if (placeBefore) {
+            params['place-before'] = placeBefore;
+        }
+        try {
+            await client.execute('/ip/firewall/filter/add', params);
+        }
+        catch (error) {
+            if (!params['place-before'])
+                throw error;
+            delete params['place-before'];
+            await client.execute('/ip/firewall/filter/add', params);
+        }
+        addedCount += 1;
+    }
+    return addedCount;
+}
+async function removeStrictBlacklistRules(client, listName, value) {
+    const filterRows = await client.execute('/ip/firewall/filter/print', {
+        '.proplist': '.id,comment',
+    });
+    const ruleIds = findStrictPolicyRuleIds(filterRows, listName, value);
+    for (const ruleId of ruleIds) {
+        try {
+            await client.execute('/ip/firewall/filter/remove', {
+                '.id': ruleId,
+            });
+        }
+        catch {
+            // ignore already removed rules
+        }
+    }
+    return ruleIds.length;
+}
 async function getAddressListEntries(listName) {
     return withRouter(async (client) => {
         const rows = await client.execute('/ip/firewall/address-list/print', {
@@ -821,14 +916,27 @@ async function getAddressListEntries(listName) {
             .sort((left, right) => left.address.localeCompare(right.address, undefined, { sensitivity: 'base' }));
     });
 }
-async function addAddressListEntry(listName, address, comment = '') {
+async function addAddressListEntry(listName, address, comment = '', options = {}) {
     return withRouter(async (client) => {
-        await client.execute('/ip/firewall/address-list/add', {
-            list: listName,
-            address,
-            comment,
-            disabled: 'no',
+        const rows = await client.execute('/ip/firewall/address-list/print', {
+            '.proplist': '.id,list,address',
         });
+        const existingTargets = new Set(rows
+            .filter((row) => String(row.list || '') === listName)
+            .map((row) => String(row.address || '').trim().toLowerCase()));
+        for (const target of buildPolicyTargets(address)) {
+            if (!target || existingTargets.has(target.toLowerCase()))
+                continue;
+            await client.execute('/ip/firewall/address-list/add', {
+                list: listName,
+                address: target,
+                comment,
+                disabled: 'no',
+            });
+        }
+        if (options.strictBlacklist) {
+            await addStrictBlacklistRules(client, listName, address);
+        }
         return getAddressListEntries(listName);
     });
 }
@@ -843,18 +951,30 @@ async function updateAddressListEntry(entryId, payload) {
             missingEntry.statusCode = 404;
             throw missingEntry;
         }
+        const currentListName = String(current.list || '');
+        const currentAddress = String(current.address || '');
         const nextAddress = payload.address ?? current.address;
         const nextComment = payload.comment ?? current.comment ?? '';
         const nextDisabled = typeof payload.disabled === 'boolean'
             ? (payload.disabled ? 'yes' : 'no')
             : (isTruthyDisabled(current.disabled) ? 'yes' : 'no');
+        const filterRows = await client.execute('/ip/firewall/filter/print', {
+            '.proplist': '.id,comment',
+        });
+        const shouldSyncStrictRules = Boolean(payload.strictBlacklist) || findStrictPolicyRuleIds(filterRows, currentListName, currentAddress).length > 0;
         await client.execute('/ip/firewall/address-list/set', {
             '.id': entryId,
             address: nextAddress,
             comment: nextComment,
             disabled: nextDisabled,
         });
-        return getAddressListEntries(String(current.list || ''));
+        if (shouldSyncStrictRules) {
+            await removeStrictBlacklistRules(client, currentListName, currentAddress);
+            if (!payload.disabled) {
+                await addStrictBlacklistRules(client, currentListName, nextAddress);
+            }
+        }
+        return getAddressListEntries(currentListName);
     });
 }
 async function deleteAddressListEntry(entryId) {
@@ -869,9 +989,11 @@ async function deleteAddressListEntry(entryId) {
             throw missingEntry;
         }
         const listName = String(current.list || '');
+        const currentAddress = String(current.address || '');
         await client.execute('/ip/firewall/address-list/remove', {
             '.id': entryId,
         });
+        await removeStrictBlacklistRules(client, listName, currentAddress);
         return {
             listName,
             entries: await getAddressListEntries(listName),
@@ -881,7 +1003,7 @@ async function deleteAddressListEntry(entryId) {
 function policyRuleComment(listName, type) {
     return type === 'whitelist' ? `ACC ${listName}` : `LABGUARD_BLOCK ${listName}`;
 }
-async function createPolicyList(listName, type, initialEntries = []) {
+async function createPolicyList(listName, type, initialEntries = [], options = {}) {
     return withRouter(async (client) => {
         const filterRows = await client.execute('/ip/firewall/filter/print', {
             '.proplist': '.id,chain,action,disabled,comment,dst-address-list,src-address-list',
@@ -910,18 +1032,34 @@ async function createPolicyList(listName, type, initialEntries = []) {
             }
         }
         await client.execute('/ip/firewall/filter/add', ruleParams);
+        const seededTargets = new Set();
         for (const address of initialEntries) {
             const trimmed = address.trim();
-            if (!trimmed) continue;
+            if (!trimmed)
+                continue;
+            for (const target of buildPolicyTargets(trimmed)) {
+                if (target) {
+                    seededTargets.add(target);
+                }
+            }
+        }
+        for (const target of seededTargets) {
             try {
                 await client.execute('/ip/firewall/address-list/add', {
                     list: listName,
-                    address: trimmed,
+                    address: target,
                     comment: `Added by Labguard`,
                     disabled: 'no',
                 });
-            } catch {
+            }
+            catch {
                 // skip duplicate or invalid entries
+            }
+        }
+        if (type === 'blacklist' && options.strictBlacklist) {
+            const strictEntries = [...new Set(initialEntries.map((entry) => String(entry || '').trim()).filter(Boolean))];
+            for (const entry of strictEntries) {
+                await addStrictBlacklistRules(client, listName, entry);
             }
         }
         return { listName, type, comment: expectedComment };
@@ -938,6 +1076,18 @@ async function deletePolicyList(listName, type) {
             await client.execute('/ip/firewall/filter/remove', {
                 '.id': ruleToDelete['.id'],
             });
+        }
+        const strictRulePrefix = `${STRICT_POLICY_COMMENT_PREFIX} ${listName} `;
+        const strictRulesToDelete = filterRows.filter((row) => String(row.comment || '').startsWith(strictRulePrefix));
+        for (const rule of strictRulesToDelete) {
+            try {
+                await client.execute('/ip/firewall/filter/remove', {
+                    '.id': rule['.id'],
+                });
+            }
+            catch {
+                // skip already-removed rules
+            }
         }
         const addressListRows = await client.execute('/ip/firewall/address-list/print', {
             '.proplist': '.id,list',
@@ -1193,6 +1343,7 @@ app.post('/api/site-policies/address-list', requireSession, async (req, res) => 
     const listName = String(req.body.listName || '').trim();
     const address = String(req.body.address || '').trim();
     const comment = String(req.body.comment || '').trim();
+    const strictBlacklist = Boolean(req.body.strictBlacklist);
     if (!listName || !address) {
         return res.status(400).json({ success: false, error: 'Nama list dan target address wajib diisi' });
     }
@@ -1209,8 +1360,8 @@ app.post('/api/site-policies/address-list', requireSession, async (req, res) => 
         return res.json({ success: true, listName, entries: mockAddressListEntries[listName] });
     }
     try {
-        const entries = await addAddressListEntry(listName, address, comment);
-        pushLocalLog(`Address-list [${listName}] tambah target ${address}`, 'info');
+        const entries = await addAddressListEntry(listName, address, comment, { strictBlacklist });
+        pushLocalLog(`Address-list [${listName}] tambah target ${address}${strictBlacklist ? ' (strict tls-host)' : ''}`, 'info');
         res.json({ success: true, listName, entries });
     }
     catch (error) {
@@ -1222,6 +1373,7 @@ app.patch('/api/site-policies/address-list/:entryId', requireSession, async (req
     const address = req.body.address !== undefined ? String(req.body.address || '').trim() : undefined;
     const comment = req.body.comment !== undefined ? String(req.body.comment || '').trim() : undefined;
     const disabled = typeof req.body.disabled === 'boolean' ? req.body.disabled : undefined;
+    const strictBlacklist = Boolean(req.body.strictBlacklist);
     if (!entryId) {
         return res.status(400).json({ success: false, error: 'Entry id wajib diisi' });
     }
@@ -1240,8 +1392,8 @@ app.patch('/api/site-policies/address-list/:entryId', requireSession, async (req
         return res.json({ success: true, listName, entries: updatedEntries });
     }
     try {
-        const entries = await updateAddressListEntry(entryId, { address, comment, disabled });
-        pushLocalLog(`Address-list entry [${entryId}] diperbarui`, 'info');
+        const entries = await updateAddressListEntry(entryId, { address, comment, disabled, strictBlacklist });
+        pushLocalLog(`Address-list entry [${entryId}] diperbarui${strictBlacklist ? ' dengan strict tls-host' : ''}`, 'info');
         res.json({ success: true, entries });
     }
     catch (error) {
@@ -1276,6 +1428,7 @@ app.post('/api/site-policies/create-list', requireSession, async (req, res) => {
     const listName = String(req.body.listName || '').trim();
     const type = String(req.body.type || 'blacklist').trim().toLowerCase();
     const initialEntries = Array.isArray(req.body.initialEntries) ? req.body.initialEntries : [];
+    const strictBlacklist = Boolean(req.body.strictBlacklist);
     if (!listName) {
         return res.status(400).json({ success: false, error: 'Nama list wajib diisi' });
     }
@@ -1334,8 +1487,8 @@ app.post('/api/site-policies/create-list', requireSession, async (req, res) => {
         return res.json({ success: true, listName, type });
     }
     try {
-        const result = await createPolicyList(listName, type, initialEntries);
-        pushLocalLog(`Policy list [${result.listName}] (${type}) dibuat: ${result.comment}`, 'success');
+        const result = await createPolicyList(listName, type, initialEntries, { strictBlacklist });
+        pushLocalLog(`Policy list [${result.listName}] (${type}) dibuat: ${result.comment}${strictBlacklist ? ' + strict tls-host' : ''}`, 'success');
         res.json({ success: true, ...result });
     }
     catch (error) {
