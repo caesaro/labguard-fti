@@ -59,6 +59,10 @@ const LAB_INTERFACE_TERMS = (process.env.LAB_INTERFACE_MATCH || 'lab,vlan')
     .split(',')
     .map((term) => term.trim().toLowerCase())
     .filter(Boolean);
+const LABS_ONLY_VLANS = (process.env.LABS_ONLY_VLANS || '')
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean);
 function getDeviceIp() {
     const interfaces = os.networkInterfaces();
     for (const entries of Object.values(interfaces)) {
@@ -99,6 +103,50 @@ let localLogs = [
     { id: 4, time: '20:05:12', event: 'System Check: All VLAN Gateways reachable', type: 'info' },
     { id: 5, time: '19:55:21', event: 'Interface [lab 461] state changed to DOWN', type: 'warning' },
 ];
+const mockSitePolicies = {
+    blockRules: [],
+    whitelistRules: [
+        {
+            id: 'allow-netacad',
+            name: 'ACC CISCO NETACAD',
+            action: 'accept',
+            status: 'active',
+            source: 'firewall-filter',
+            matcher: 'List: ACC CISCO NETACAD',
+            references: ['Address List: ACC CISCO NETACAD'],
+        },
+    ],
+    blacklistResources: [
+        {
+            id: 'address-list-porno',
+            type: 'address-list',
+            name: 'porno',
+            status: 'active',
+            totalEntries: 24,
+            sampleTargets: ['xvideos.com', 'xnxx.com', 'xhamster.com'],
+        },
+        {
+            id: 'layer7-blokir-openai',
+            type: 'layer7',
+            name: 'blokir openai',
+            status: 'active',
+            totalEntries: 1,
+            sampleTargets: ['openai.com'],
+        },
+    ],
+};
+const mockAddressListEntries = {
+    'drive google': [
+        { id: 'mock-drive-1', list: 'drive google', address: 'drive.google.com', comment: 'Google Drive', disabled: false },
+    ],
+    'porno': [
+        { id: 'mock-porno-1', list: 'porno', address: 'xvideos.com', comment: 'Sample Block', disabled: false },
+        { id: 'mock-porno-2', list: 'porno', address: 'xnxx.com', comment: 'Sample Block', disabled: false },
+    ],
+    'ACC CISCO NETACAD': [
+        { id: 'mock-netacad-1', list: 'ACC CISCO NETACAD', address: 'netacad.com', comment: 'Cisco NetAcad', disabled: false },
+    ],
+};
 function nowTime() {
     return new Intl.DateTimeFormat('id-ID', {
         hour: '2-digit',
@@ -470,6 +518,90 @@ function findTeacherNatRule(rules, teacherIp) {
             hasMatchingWanTarget(rule));
     });
 }
+function isTruthyDisabled(value) {
+    const normalized = String(value ?? '').toLowerCase();
+    return normalized === 'true' || normalized === 'yes';
+}
+function formatPolicyStatus(disabled) {
+    return isTruthyDisabled(disabled) ? 'disabled' : 'active';
+}
+function findPolicyListRefs(rule) {
+    return [rule['dst-address-list'], rule['src-address-list']].filter(Boolean).map(String);
+}
+function buildPolicyMatcher(rule) {
+    const parts = [];
+    if (rule['layer7-protocol'])
+        parts.push(`L7: ${rule['layer7-protocol']}`);
+    if (rule['tls-host'])
+        parts.push(`TLS: ${rule['tls-host']}`);
+    if (rule.content)
+        parts.push(`Content: ${rule.content}`);
+    const listRefs = findPolicyListRefs(rule);
+    if (listRefs.length)
+        parts.push(`List: ${listRefs.join(', ')}`);
+    if (rule['dst-port'])
+        parts.push(`Port: ${rule['dst-port']}`);
+    return parts.join(' | ') || rule.comment || 'General rule';
+}
+function hasBlacklistHint(value) {
+    return /blok|block|blacklist|porno|adult|openai|chatgpt|drive|onedrive|terabox|easyworship|adobe/i.test(String(value || ''));
+}
+function hasWhitelistHint(value) {
+    return /allow|acc|buka|whitelist|permit|netacad|dev/i.test(String(value || ''));
+}
+function isBlockPolicyRule(rule) {
+    const action = String(rule.action || '').toLowerCase();
+    return (['drop', 'reject'].includes(action) &&
+        (Boolean(rule['layer7-protocol']) ||
+            Boolean(rule['tls-host']) ||
+            Boolean(rule.content) ||
+            findPolicyListRefs(rule).length > 0 ||
+            hasBlacklistHint(rule.comment)));
+}
+function isWhitelistPolicyRule(rule) {
+    const action = String(rule.action || '').toLowerCase();
+    return (action === 'accept' &&
+        (Boolean(rule['layer7-protocol']) ||
+            Boolean(rule['tls-host']) ||
+            Boolean(rule.content) ||
+            findPolicyListRefs(rule).length > 0 ||
+            hasWhitelistHint(rule.comment)));
+}
+function summarizePolicyRule(rule, source) {
+    const listRefs = findPolicyListRefs(rule);
+    const references = [
+        ...listRefs.map((listName) => `Address List: ${listName}`),
+        ...(rule['layer7-protocol'] ? [`Layer7: ${rule['layer7-protocol']}`] : []),
+    ];
+    return {
+        id: `${source}-${rule['.id'] || rule.id || rule.comment || Math.random().toString(36).slice(2)}`,
+        name: rule.comment || rule['layer7-protocol'] || rule['tls-host'] || listRefs[0] || `${source} rule`,
+        action: String(rule.action || '').toLowerCase(),
+        status: formatPolicyStatus(rule.disabled),
+        source,
+        matcher: buildPolicyMatcher(rule),
+        references,
+    };
+}
+function summarizeBlacklistResources(listNames, layer7Names) {
+    const addressListResources = [...new Set(listNames.filter(Boolean))].map((name) => ({
+        id: `address-list-${name}`,
+        type: 'address-list',
+        name,
+        status: 'active',
+        totalEntries: null,
+        sampleTargets: [],
+    }));
+    const layer7Resources = [...new Set(layer7Names.filter(Boolean))].map((name) => ({
+        id: `layer7-${name}`,
+        type: 'layer7',
+        name,
+        status: 'active',
+        totalEntries: 1,
+        sampleTargets: [name],
+    }));
+    return [...addressListResources, ...layer7Resources];
+}
 function buildInterfaceAddressMap(rows) {
     const addressMap = new Map();
     for (const row of rows) {
@@ -643,6 +775,186 @@ function mockUplinkTraffic() {
 async function getUplinkTraffic() {
     return withRouter((client) => monitorInterfaceTraffic(client, UPLINK_INTERFACE || 'ether2-backboneUKSW', 'uplink'));
 }
+async function getSitePolicies() {
+    return withRouter(async (client) => {
+        const filterRows = await client.execute('/ip/firewall/filter/print', {
+            '.proplist': '.id,chain,action,disabled,comment,content,tls-host,layer7-protocol,src-address-list,dst-address-list,protocol,dst-port',
+        });
+        const blockRules = filterRows.filter(isBlockPolicyRule).map((rule) => summarizePolicyRule(rule, 'firewall-filter'));
+        const whitelistRules = filterRows.filter(isWhitelistPolicyRule).map((rule) => summarizePolicyRule(rule, 'firewall-filter'));
+        const referencedLists = new Set();
+        const referencedL7Names = new Set();
+        for (const rule of blockRules) {
+            for (const reference of rule.references) {
+                if (reference.startsWith('Address List: ')) {
+                    referencedLists.add(reference.replace('Address List: ', ''));
+                }
+                if (reference.startsWith('Layer7: ')) {
+                    referencedL7Names.add(reference.replace('Layer7: ', ''));
+                }
+            }
+        }
+        return {
+            blockRules,
+            whitelistRules,
+            blacklistResources: summarizeBlacklistResources([...referencedLists], [...referencedL7Names]),
+        };
+    });
+}
+function mapAddressListEntry(row) {
+    return {
+        id: row['.id'] || row.id,
+        list: String(row.list || ''),
+        address: String(row.address || ''),
+        comment: String(row.comment || ''),
+        disabled: isTruthyDisabled(row.disabled),
+    };
+}
+async function getAddressListEntries(listName) {
+    return withRouter(async (client) => {
+        const rows = await client.execute('/ip/firewall/address-list/print', {
+            '.proplist': '.id,list,address,comment,disabled',
+        });
+        return rows
+            .filter((row) => String(row.list || '') === listName)
+            .map(mapAddressListEntry)
+            .sort((left, right) => left.address.localeCompare(right.address, undefined, { sensitivity: 'base' }));
+    });
+}
+async function addAddressListEntry(listName, address, comment = '') {
+    return withRouter(async (client) => {
+        await client.execute('/ip/firewall/address-list/add', {
+            list: listName,
+            address,
+            comment,
+            disabled: 'no',
+        });
+        return getAddressListEntries(listName);
+    });
+}
+async function updateAddressListEntry(entryId, payload) {
+    return withRouter(async (client) => {
+        const rows = await client.execute('/ip/firewall/address-list/print', {
+            '.proplist': '.id,list,address,comment,disabled',
+        });
+        const current = rows.find((row) => String(row['.id'] || row.id) === entryId);
+        if (!current) {
+            const missingEntry = new Error('Entry address-list tidak ditemukan');
+            missingEntry.statusCode = 404;
+            throw missingEntry;
+        }
+        const nextAddress = payload.address ?? current.address;
+        const nextComment = payload.comment ?? current.comment ?? '';
+        const nextDisabled = typeof payload.disabled === 'boolean'
+            ? (payload.disabled ? 'yes' : 'no')
+            : (isTruthyDisabled(current.disabled) ? 'yes' : 'no');
+        await client.execute('/ip/firewall/address-list/set', {
+            '.id': entryId,
+            address: nextAddress,
+            comment: nextComment,
+            disabled: nextDisabled,
+        });
+        return getAddressListEntries(String(current.list || ''));
+    });
+}
+async function deleteAddressListEntry(entryId) {
+    return withRouter(async (client) => {
+        const rows = await client.execute('/ip/firewall/address-list/print', {
+            '.proplist': '.id,list,address,comment,disabled',
+        });
+        const current = rows.find((row) => String(row['.id'] || row.id) === entryId);
+        if (!current) {
+            const missingEntry = new Error('Entry address-list tidak ditemukan');
+            missingEntry.statusCode = 404;
+            throw missingEntry;
+        }
+        const listName = String(current.list || '');
+        await client.execute('/ip/firewall/address-list/remove', {
+            '.id': entryId,
+        });
+        return {
+            listName,
+            entries: await getAddressListEntries(listName),
+        };
+    });
+}
+function policyRuleComment(listName, type) {
+    return type === 'whitelist' ? `ACC ${listName}` : `LABGUARD_BLOCK ${listName}`;
+}
+async function createPolicyList(listName, type, initialEntries = []) {
+    return withRouter(async (client) => {
+        const filterRows = await client.execute('/ip/firewall/filter/print', {
+            '.proplist': '.id,chain,action,disabled,comment,dst-address-list,src-address-list',
+        });
+        const expectedComment = policyRuleComment(listName, type);
+        const alreadyExists = filterRows.find((row) => String(row.comment || '') === expectedComment);
+        if (alreadyExists) {
+            const duplicateError = new Error(`Rule "${expectedComment}" sudah ada di firewall filter`);
+            duplicateError.statusCode = 409;
+            throw duplicateError;
+        }
+        const action = type === 'whitelist' ? 'accept' : 'drop';
+        const ruleParams = {
+            chain: 'forward',
+            action,
+            'dst-address-list': listName,
+            comment: expectedComment,
+        };
+        if (type === 'whitelist') {
+            const firstBlockIndex = filterRows.findIndex(isBlockPolicyRule);
+            if (firstBlockIndex >= 0) {
+                const blockRuleId = filterRows[firstBlockIndex]['.id'];
+                if (blockRuleId) {
+                    ruleParams['place-before'] = blockRuleId;
+                }
+            }
+        }
+        await client.execute('/ip/firewall/filter/add', ruleParams);
+        for (const address of initialEntries) {
+            const trimmed = address.trim();
+            if (!trimmed) continue;
+            try {
+                await client.execute('/ip/firewall/address-list/add', {
+                    list: listName,
+                    address: trimmed,
+                    comment: `Added by Labguard`,
+                    disabled: 'no',
+                });
+            } catch {
+                // skip duplicate or invalid entries
+            }
+        }
+        return { listName, type, comment: expectedComment };
+    });
+}
+async function deletePolicyList(listName, type) {
+    return withRouter(async (client) => {
+        const filterRows = await client.execute('/ip/firewall/filter/print', {
+            '.proplist': '.id,chain,action,disabled,comment,dst-address-list,src-address-list',
+        });
+        const expectedComment = policyRuleComment(listName, type);
+        const ruleToDelete = filterRows.find((row) => String(row.comment || '') === expectedComment);
+        if (ruleToDelete) {
+            await client.execute('/ip/firewall/filter/remove', {
+                '.id': ruleToDelete['.id'],
+            });
+        }
+        const addressListRows = await client.execute('/ip/firewall/address-list/print', {
+            '.proplist': '.id,list',
+        });
+        const entriesToDelete = addressListRows.filter((row) => String(row.list || '') === listName);
+        for (const entry of entriesToDelete) {
+            try {
+                await client.execute('/ip/firewall/address-list/remove', {
+                    '.id': entry['.id'],
+                });
+            } catch {
+                // skip already-removed entries
+            }
+        }
+        return { listName, type, deletedRule: !!ruleToDelete, deletedEntries: entriesToDelete.length };
+    });
+}
 async function setInternetAccessByNat(interfaceId, internetEnabled) {
     return withRouter(async (client) => {
         const interfaceRows = await client.execute('/interface/print', {
@@ -767,6 +1079,9 @@ async function setQueueTreeBandwidth(interfaceId, bandwidthMbps) {
         };
     });
 }
+app.get('/api/config/labs-only-order', (_req, res) => {
+    res.json({ vlans: LABS_ONLY_VLANS });
+});
 app.post('/api/login', (req, res) => {
     const pin = String(req.body.pin ?? req.body.password ?? '').trim();
     const remember = Boolean(req.body.remember);
@@ -840,6 +1155,223 @@ app.get('/api/router/uplink-traffic', requireSession, async (_req, res) => {
     }
     catch (error) {
         res.status(500).json({ error: formatRouterError(error) });
+    }
+});
+app.get('/api/site-policies', requireSession, async (_req, res) => {
+    if (!HAS_CONFIG) {
+        return res.json(mockSitePolicies);
+    }
+    try {
+        res.json(await getSitePolicies());
+    }
+    catch (error) {
+        res.status(500).json({ error: formatRouterError(error) });
+    }
+});
+app.get('/api/site-policies/address-list/:listName', requireSession, async (req, res) => {
+    const listName = decodeURIComponent(req.params.listName);
+    if (!listName) {
+        return res.status(400).json({ success: false, error: 'Nama address-list wajib diisi' });
+    }
+    if (!HAS_CONFIG) {
+        return res.json({
+            listName,
+            entries: mockAddressListEntries[listName] || [],
+        });
+    }
+    try {
+        res.json({
+            listName,
+            entries: await getAddressListEntries(listName),
+        });
+    }
+    catch (error) {
+        res.status(error.statusCode || 500).json({ success: false, error: formatRouterError(error) });
+    }
+});
+app.post('/api/site-policies/address-list', requireSession, async (req, res) => {
+    const listName = String(req.body.listName || '').trim();
+    const address = String(req.body.address || '').trim();
+    const comment = String(req.body.comment || '').trim();
+    if (!listName || !address) {
+        return res.status(400).json({ success: false, error: 'Nama list dan target address wajib diisi' });
+    }
+    if (!HAS_CONFIG) {
+        const currentEntries = mockAddressListEntries[listName] || [];
+        const nextEntry = {
+            id: `mock-${Date.now()}`,
+            list: listName,
+            address,
+            comment,
+            disabled: false,
+        };
+        mockAddressListEntries[listName] = [...currentEntries, nextEntry];
+        return res.json({ success: true, listName, entries: mockAddressListEntries[listName] });
+    }
+    try {
+        const entries = await addAddressListEntry(listName, address, comment);
+        pushLocalLog(`Address-list [${listName}] tambah target ${address}`, 'info');
+        res.json({ success: true, listName, entries });
+    }
+    catch (error) {
+        res.status(error.statusCode || 500).json({ success: false, error: formatRouterError(error) });
+    }
+});
+app.patch('/api/site-policies/address-list/:entryId', requireSession, async (req, res) => {
+    const entryId = decodeURIComponent(req.params.entryId);
+    const address = req.body.address !== undefined ? String(req.body.address || '').trim() : undefined;
+    const comment = req.body.comment !== undefined ? String(req.body.comment || '').trim() : undefined;
+    const disabled = typeof req.body.disabled === 'boolean' ? req.body.disabled : undefined;
+    if (!entryId) {
+        return res.status(400).json({ success: false, error: 'Entry id wajib diisi' });
+    }
+    if (!HAS_CONFIG) {
+        const listName = String(req.body.listName || '').trim();
+        const entries = mockAddressListEntries[listName] || [];
+        const updatedEntries = entries.map((entry) => entry.id === entryId
+            ? {
+                ...entry,
+                address: address ?? entry.address,
+                comment: comment ?? entry.comment,
+                disabled: disabled ?? entry.disabled,
+            }
+            : entry);
+        mockAddressListEntries[listName] = updatedEntries;
+        return res.json({ success: true, listName, entries: updatedEntries });
+    }
+    try {
+        const entries = await updateAddressListEntry(entryId, { address, comment, disabled });
+        pushLocalLog(`Address-list entry [${entryId}] diperbarui`, 'info');
+        res.json({ success: true, entries });
+    }
+    catch (error) {
+        res.status(error.statusCode || 500).json({ success: false, error: formatRouterError(error) });
+    }
+});
+app.delete('/api/site-policies/address-list/:entryId', requireSession, async (req, res) => {
+    const entryId = decodeURIComponent(req.params.entryId);
+    const listName = String(req.body?.listName || req.query?.listName || '').trim();
+    if (!entryId) {
+        return res.status(400).json({ success: false, error: 'Entry id wajib diisi' });
+    }
+    if (!HAS_CONFIG) {
+        if (!listName) {
+            return res.status(400).json({ success: false, error: 'Nama list wajib diisi untuk mode simulasi' });
+        }
+        const entries = mockAddressListEntries[listName] || [];
+        const updatedEntries = entries.filter((entry) => entry.id !== entryId);
+        mockAddressListEntries[listName] = updatedEntries;
+        return res.json({ success: true, listName, entries: updatedEntries });
+    }
+    try {
+        const result = await deleteAddressListEntry(entryId);
+        pushLocalLog(`Address-list entry [${entryId}] dihapus dari [${result.listName}]`, 'warning');
+        res.json({ success: true, listName: result.listName, entries: result.entries });
+    }
+    catch (error) {
+        res.status(error.statusCode || 500).json({ success: false, error: formatRouterError(error) });
+    }
+});
+app.post('/api/site-policies/create-list', requireSession, async (req, res) => {
+    const listName = String(req.body.listName || '').trim();
+    const type = String(req.body.type || 'blacklist').trim().toLowerCase();
+    const initialEntries = Array.isArray(req.body.initialEntries) ? req.body.initialEntries : [];
+    if (!listName) {
+        return res.status(400).json({ success: false, error: 'Nama list wajib diisi' });
+    }
+    if (type !== 'blacklist' && type !== 'whitelist') {
+        return res.status(400).json({ success: false, error: 'Type harus blacklist atau whitelist' });
+    }
+    if (!HAS_CONFIG) {
+        const comment = policyRuleComment(listName, type);
+        if (type === 'blacklist') {
+            const alreadyExists = mockSitePolicies.blacklistResources.find((r) => r.name === listName);
+            if (alreadyExists) {
+                return res.status(409).json({ success: false, error: `Blacklist "${listName}" sudah ada` });
+            }
+            mockSitePolicies.blockRules.push({
+                id: `firewall-filter-mock-${Date.now()}`,
+                name: comment,
+                action: 'drop',
+                status: 'active',
+                source: 'firewall-filter',
+                matcher: `List: ${listName}`,
+                references: [`Address List: ${listName}`],
+            });
+            mockSitePolicies.blacklistResources.push({
+                id: `address-list-${listName}`,
+                type: 'address-list',
+                name: listName,
+                status: 'active',
+                totalEntries: initialEntries.length,
+                sampleTargets: initialEntries.slice(0, 3),
+            });
+        } else {
+            const alreadyExists = mockSitePolicies.whitelistRules.find((r) => r.references?.some((ref) => ref === `Address List: ${listName}`));
+            if (alreadyExists) {
+                return res.status(409).json({ success: false, error: `Whitelist "${listName}" sudah ada` });
+            }
+            mockSitePolicies.whitelistRules.push({
+                id: `firewall-filter-mock-${Date.now()}`,
+                name: comment,
+                action: 'accept',
+                status: 'active',
+                source: 'firewall-filter',
+                matcher: `List: ${listName}`,
+                references: [`Address List: ${listName}`],
+            });
+        }
+        mockAddressListEntries[listName] = initialEntries
+            .filter((addr) => String(addr || '').trim())
+            .map((addr, idx) => ({
+                id: `mock-${Date.now()}-${idx}`,
+                list: listName,
+                address: String(addr).trim(),
+                comment: 'Added by Labguard',
+                disabled: false,
+            }));
+        pushLocalLog(`Policy list [${listName}] (${type}) dibuat dengan ${initialEntries.length} entries`, 'success');
+        return res.json({ success: true, listName, type });
+    }
+    try {
+        const result = await createPolicyList(listName, type, initialEntries);
+        pushLocalLog(`Policy list [${result.listName}] (${type}) dibuat: ${result.comment}`, 'success');
+        res.json({ success: true, ...result });
+    }
+    catch (error) {
+        res.status(error.statusCode || 500).json({ success: false, error: formatRouterError(error) });
+    }
+});
+app.delete('/api/site-policies/delete-list', requireSession, async (req, res) => {
+    const listName = String(req.body?.listName || req.query?.listName || '').trim();
+    const type = String(req.body?.type || req.query?.type || 'blacklist').trim().toLowerCase();
+    if (!listName) {
+        return res.status(400).json({ success: false, error: 'Nama list wajib diisi' });
+    }
+    if (!HAS_CONFIG) {
+        if (type === 'blacklist') {
+            mockSitePolicies.blockRules = mockSitePolicies.blockRules.filter(
+                (r) => !r.references?.some((ref) => ref === `Address List: ${listName}`)
+            );
+            mockSitePolicies.blacklistResources = mockSitePolicies.blacklistResources.filter(
+                (r) => r.name !== listName
+            );
+        } else {
+            mockSitePolicies.whitelistRules = mockSitePolicies.whitelistRules.filter(
+                (r) => !r.references?.some((ref) => ref === `Address List: ${listName}`)
+            );
+        }
+        delete mockAddressListEntries[listName];
+        pushLocalLog(`Policy list [${listName}] (${type}) dihapus`, 'warning');
+        return res.json({ success: true, listName, type });
+    }
+    try {
+        const result = await deletePolicyList(listName, type);
+        pushLocalLog(`Policy list [${result.listName}] (${type}) dihapus — rule: ${result.deletedRule}, entries: ${result.deletedEntries}`, 'warning');
+        res.json({ success: true, ...result });
+    }
+    catch (error) {
+        res.status(error.statusCode || 500).json({ success: false, error: formatRouterError(error) });
     }
 });
 app.post('/api/interfaces/:id/toggle', requireSession, async (req, res) => {
