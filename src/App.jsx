@@ -57,17 +57,17 @@ function UplinkTrafficCard({ uplinkTraffic }) {
       </div>
     </div>);
 }
-function SitePolicySection({ title, subtitle, emptyLabel, items, renderItem }) {
+function SitePolicySection({ title, subtitle, emptyLabel, items, renderItem, hideHeader = false }) {
     return (<div className="space-y-4">
-      <div className="flex items-center justify-between gap-3 px-1 sm:px-2">
-        <div className="min-w-0">
-          <h3 className="text-sm sm:text-base font-black uppercase tracking-[0.16em] text-white">{title}</h3>
-          <p className="text-[9px] sm:text-[10px] font-bold uppercase tracking-[0.16em] text-gray-400 mt-1">{subtitle}</p>
-        </div>
-        <div className="px-2 py-1 rounded-md text-[8px] font-black uppercase border border-blue-500/20 text-blue-400 bg-blue-500/10 shrink-0">
-          {items.length} Rules
-        </div>
-      </div>
+      {!hideHeader && (<div className="flex items-center justify-between gap-3 px-1 sm:px-2">
+          <div className="min-w-0">
+            <h3 className="text-sm sm:text-base font-black uppercase tracking-[0.16em] text-white">{title}</h3>
+            <p className="text-[9px] sm:text-[10px] font-bold uppercase tracking-[0.16em] text-gray-400 mt-1">{subtitle}</p>
+          </div>
+          <div className="px-2 py-1 rounded-md text-[8px] font-black uppercase border border-blue-500/20 text-blue-400 bg-blue-500/10 shrink-0">
+            {items.length} Rules
+          </div>
+        </div>)}
       {items.length > 0 ? (<div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           {items.map(renderItem)}
         </div>) : (<div className="bg-white dark:bg-[#1C1C1E] rounded-3xl border border-dashed border-gray-200 dark:border-white/10 px-5 py-10 text-center text-gray-400">
@@ -1130,7 +1130,7 @@ export default function App() {
                       </div>
                     </button>
 
-                    {policyAccordion.whitelist && (<SitePolicySection title="Whitelist Rules" subtitle="Rule accept yang jadi pengecualian akses untuk domain atau layanan tertentu." emptyLabel="Belum ada whitelist rule yang terdeteksi" items={filteredWhitelistRules} renderItem={(rule) => (<div key={rule.id} className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-5 border border-gray-100 dark:border-white/5 shadow-sm space-y-4">
+                    {policyAccordion.whitelist && (<SitePolicySection title="Whitelist Rules" subtitle="Rule accept yang jadi pengecualian akses untuk domain atau layanan tertentu." emptyLabel="Belum ada whitelist rule yang terdeteksi" items={filteredWhitelistRules} hideHeader={true} renderItem={(rule) => (<div key={rule.id} className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-5 border border-gray-100 dark:border-white/5 shadow-sm space-y-4">
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0">
                                 <h4 className="text-sm font-black uppercase tracking-tight text-white">{rule.name}</h4>
@@ -1162,7 +1162,7 @@ export default function App() {
                       </div>
                     </button>
 
-                    {policyAccordion.blacklist && (<SitePolicySection title="Blacklist Sources" subtitle="Sumber data yang dipakai router untuk block site, termasuk address-list dan layer7." emptyLabel="Belum ada source blacklist yang terdeteksi" items={filteredBlacklistResources} renderItem={(resource) => (<div key={resource.id} className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-5 border border-gray-100 dark:border-white/5 shadow-sm space-y-4">
+                    {policyAccordion.blacklist && (<SitePolicySection title="Blacklist Sources" subtitle="Sumber data yang dipakai router untuk block site, termasuk address-list dan layer7." emptyLabel="Belum ada source blacklist yang terdeteksi" items={filteredBlacklistResources} hideHeader={true} renderItem={(resource) => (<div key={resource.id} className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-5 border border-gray-100 dark:border-white/5 shadow-sm space-y-4">
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0">
                                 <h4 className="text-sm font-black uppercase tracking-tight text-white">{resource.name}</h4>
