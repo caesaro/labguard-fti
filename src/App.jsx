@@ -1383,7 +1383,7 @@ export default function App() {
                             </div>
                           </div>
                           <div className={`px-2 py-0.5 rounded text-[8px] font-bold uppercase border shrink-0 ${iface.enabled ? 'border-blue-500/20 text-blue-500 bg-blue-500/10' : 'border-red-500/20 text-red-500 bg-red-500/10'}`}>
-                            {iface.enabled ? t('accessActive') : t('blocked')}
+                            {iface.enabled ? t('accessActive') : t('access Inactive')}
                           </div>
                         </div>
 
@@ -1431,7 +1431,7 @@ export default function App() {
                           <button onClick={() => toggleInterface(iface.id, iface.enabled)} className={`px-4 sm:px-5 py-2 rounded-lg text-[9px] font-bold uppercase tracking-wider transition-all shrink-0 ${iface.enabled
                                   ? 'bg-red-600 hover:bg-red-700 text-white shadow-md'
                                   : 'bg-green-600 hover:bg-green-700 text-white shadow-md'}`}>
-                            {iface.enabled ? t('blockStudents') : t('unblockStudents')}
+                            {iface.enabled ? t('Disable') : t('Enable')}
                           </button>
                         </div>
                       </motion.div>))}
