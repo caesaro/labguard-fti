@@ -55,6 +55,8 @@ const UPLINK_INTERFACE = (process.env.UPLINK_INTERFACE || WAN_INTERFACE || 'ethe
 const NAT_BLOCK_COMMENT_PREFIX = process.env.LABGUARD_NAT_BLOCK_PREFIX || 'LABGUARD_NO_INTERNET';
 const STRICT_POLICY_COMMENT_PREFIX = 'LABGUARD_TLS_BLOCK';
 const NAT_PLACE_BEFORE = process.env.LABGUARD_NAT_PLACE_BEFORE || '0';
+const MAC_BLOCK_COMMENT_PREFIX = (process.env.LABGUARD_MAC_BLOCK_PREFIX || 'LABGUARD_MAC_NO_INTERNET').trim();
+const MAC_PLACE_BEFORE = (process.env.LABGUARD_MAC_PLACE_BEFORE || '').trim();
 const LAB_TEACHER_HOST_SUFFIX = Number(process.env.LAB_TEACHER_HOST_SUFFIX || 2);
 const LAB_INTERFACE_TERMS = (process.env.LAB_INTERFACE_MATCH || 'lab,vlan')
     .split(',')
@@ -89,7 +91,8 @@ let mockInterfaces = [
     { id: '*13', name: 'vlan-management', enabled: true, running: true, comment: 'VLAN 10 - Management Core', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false, teacherInternetEnabled: false },
     { id: '*14', name: 'lab 465', enabled: true, running: true, comment: 'VLAN 65 - Lab IoT & Robotik', type: 'vlan', interfaceEnabled: true, internetBlocked: false, queueTreeId: '*q14', queueTreeName: '465', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true, teacherIp: '172.67.14.2', teacherInternetEnabled: true },
     { id: '*15', name: 'lab 462', enabled: true, running: true, comment: 'VLAN 62 - Lab Multimedia', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false, teacherIp: '172.67.12.2', teacherInternetEnabled: true },
-    { id: '*16', name: 'lab 463', enabled: true, running: true, comment: 'VLAN 63 - Lab Basis Data', type: 'vlan', interfaceEnabled: true, internetBlocked: false, queueTreeId: '*q16', queueTreeName: '463', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true, teacherIp: '172.67.12.66', teacherInternetEnabled: true },
+    { id: '*16', name: 'vlan463', enabled: true, running: true, comment: 'VLAN 63 - Lab Basis Data', type: 'vlan', interfaceEnabled: true, internetBlocked: false, queueTreeId: '*q16', queueTreeName: '463', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true, teacherIp: '172.67.12.2', teacherInternetEnabled: true },
+    { id: '*16b', name: 'lab 463', enabled: true, running: true, comment: 'VLAN 63 - Lab Basis Data', type: 'vlan', interfaceEnabled: true, internetBlocked: false, queueTreeId: '*q16', queueTreeName: '463', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true, teacherIp: '172.67.12.2', teacherInternetEnabled: true },
     { id: '*17', name: 'lab 466', enabled: false, running: true, comment: 'VLAN 66 - Lab Kecerdasan Buatan', type: 'vlan', interfaceEnabled: true, internetBlocked: true, bandwidthEnabled: false, hasQueueTree: false, teacherIp: '172.67.15.2', teacherInternetEnabled: false },
     { id: '*18', name: 'lab 468', enabled: true, running: true, comment: 'VLAN 68 - Lab Keamanan Siber', type: 'vlan', interfaceEnabled: true, internetBlocked: false, bandwidthEnabled: false, hasQueueTree: false, teacherIp: '172.67.18.2', teacherInternetEnabled: true },
     { id: '*19', name: 'lab 469', enabled: true, running: true, comment: 'VLAN 69 - Lab Cloud Computing', type: 'vlan', interfaceEnabled: true, internetBlocked: false, queueTreeId: '*q19', queueTreeName: '469', bandwidthEnabled: true, bandwidthLimit: 100_000_000, bandwidthLimitMbps: 100, hasQueueTree: true, teacherIp: '172.67.19.2', teacherInternetEnabled: true },
@@ -148,6 +151,28 @@ const mockAddressListEntries = {
         { id: 'mock-netacad-1', list: 'ACC CISCO NETACAD', address: 'netacad.com', comment: 'Cisco NetAcad', disabled: false },
     ],
 };
+let mockMacBlocks = [
+    {
+        id: 'mock-mac-1',
+        mac: 'D8:BB:C1:E0:85:62',
+        label: 'PC Lab 461 - 01',
+        scope: 'vlan461',
+        action: 'drop',
+        outInterface: 'ether2-backboneUKSW',
+        internetEnabled: false,
+        disabled: false,
+    },
+    {
+        id: 'mock-mac-2',
+        mac: '3C:52:82:1A:44:B7',
+        label: 'Laptop mahasiswa (demo)',
+        scope: '',
+        action: 'accept',
+        outInterface: 'ether2-backboneUKSW',
+        internetEnabled: true,
+        disabled: true,
+    },
+];
 function nowTime() {
     return new Intl.DateTimeFormat('id-ID', {
         hour: '2-digit',
@@ -258,6 +283,7 @@ function teacherIpFromCidr(cidr) {
     const network = ipInt & mask;
     return intToIpv4((network + LAB_TEACHER_HOST_SUFFIX) >>> 0);
 }
+
 function networkCidrFromCidr(cidr) {
     if (!cidr || !cidr.includes('/'))
         return null;
@@ -470,6 +496,10 @@ function isManagedInterface(iface) {
         return iface.type === 'vlan';
     return LAB_INTERFACE_TERMS.some((term) => haystack.includes(term));
 }
+function isKnownLabVlan(name) {
+    const normalized = String(name || '').trim().toLowerCase();
+    return LABS_ONLY_VLANS.some((vlan) => vlan.trim().toLowerCase() === normalized);
+}
 function natBlockComment(ifaceName) {
     return `${NAT_BLOCK_COMMENT_PREFIX}:${ifaceName}`;
 }
@@ -478,31 +508,80 @@ function isTruthyRouterDisabled(value) {
     return normalized === 'true' || normalized === 'yes';
 }
 function findNatBlockRule(rules, ifaceName) {
-    const expectedComment = natBlockComment(ifaceName);
-    return rules.find((rule) => rule.comment === expectedComment) ||
+    const expectedComment = natBlockComment(ifaceName).toLowerCase();
+    const normalizedIface = ifaceName.toLowerCase();
+    return rules.find((rule) => String(rule.comment || '').toLowerCase() === expectedComment) ||
+        rules.find((rule) => String(rule.comment || '').toLowerCase() === `fti:${normalizedIface}`) ||
         rules.find((rule) => rule.chain === 'srcnat' &&
             rule.action === 'accept' &&
-            rule['in-interface'] === ifaceName &&
-            ((WAN_INTERFACE && rule['out-interface'] === WAN_INTERFACE) ||
-                (WAN_INTERFACE_LIST && rule['out-interface-list'] === WAN_INTERFACE_LIST) ||
-                (!rule['out-interface'] && !rule['out-interface-list'])) &&
-            String(rule.comment || '').startsWith(NAT_BLOCK_COMMENT_PREFIX));
+            String(rule['in-interface'] || '').toLowerCase() === normalizedIface &&
+            hasMatchingWanTarget(rule) &&
+            String(rule.comment || '').toLowerCase().startsWith(NAT_BLOCK_COMMENT_PREFIX.toLowerCase()));
 }
 function hasMatchingWanTarget(rule) {
     return ((WAN_INTERFACE && rule['out-interface'] === WAN_INTERFACE) ||
         (WAN_INTERFACE_LIST && rule['out-interface-list'] === WAN_INTERFACE_LIST) ||
         (!rule['out-interface'] && !rule['out-interface-list']));
 }
+// ---- Per-MAC internet access control helpers ----
+function normalizeMacAddress(value) {
+    const raw = String(value ?? '').trim().replace(/[-\s]/g, ':').toUpperCase();
+    if (!/^[0-9A-F]{2}(:[0-9A-F]{2}){5}$/.test(raw))
+        return null;
+    return raw;
+}
+const MAC_RULE_ACTIONS = ['drop', 'accept'];
+function normalizeMacRuleAction(value, fallback = 'drop') {
+    const normalized = String(value ?? '').trim().toLowerCase();
+    return MAC_RULE_ACTIONS.includes(normalized) ? normalized : fallback;
+}
+function macBlockComment(macAddress, label, action = 'drop') {
+    const cleanLabel = String(label ?? '').replace(/\|/g, ' ').trim().slice(0, 64);
+    const cleanAction = normalizeMacRuleAction(action);
+    return `${MAC_BLOCK_COMMENT_PREFIX}:${macAddress}${cleanLabel ? ` | ${cleanLabel}` : ''} | ACTION:${cleanAction}`;
+}
+function isMacBlockRule(rule) {
+    return String(rule.comment || '')
+        .toUpperCase()
+        .startsWith(`${MAC_BLOCK_COMMENT_PREFIX.toUpperCase()}:`);
+}
+// Comment lama (tanpa "| ACTION:...") tetap dibaca sebagai action=drop -> entri lama aman.
+function parseMacBlockComment(comment) {
+    const raw = String(comment || '').slice(MAC_BLOCK_COMMENT_PREFIX.length + 1);
+    const segments = raw.split('|').map((segment) => segment.trim());
+    const macFromComment = normalizeMacAddress(segments[0] || '') || '';
+    let action = '';
+    const labelParts = [];
+    segments.slice(1).forEach((segment) => {
+        const match = /^action\s*[:=]\s*(drop|accept)$/i.exec(segment);
+        if (match) {
+            action = match[1].toLowerCase();
+            return;
+        }
+        if (segment)
+            labelParts.push(segment);
+    });
+    return { macFromComment, label: labelParts.join(' | ').trim(), action };
+}
+function withWanMatcher(target) {
+    if (WAN_INTERFACE)
+        target['out-interface'] = WAN_INTERFACE;
+    else if (WAN_INTERFACE_LIST)
+        target['out-interface-list'] = WAN_INTERFACE_LIST;
+    return target;
+}
 function findStudentNatRule(rules, subnetCidr) {
     if (!subnetCidr)
         return undefined;
+    const cleanSubnet = subnetCidr.trim().toLowerCase();
     return rules.find((rule) => {
         const comment = String(rule.comment || '').toLowerCase();
         const action = String(rule.action || '').toLowerCase();
         const chain = String(rule.chain || '').toLowerCase();
+        const srcAddr = String(rule['src-address'] || '').trim().toLowerCase();
         return (chain === 'srcnat' &&
             (action === 'src-nat' || action === 'masquerade') &&
-            String(rule['src-address'] || '') === subnetCidr &&
+            srcAddr === cleanSubnet &&
             hasMatchingWanTarget(rule) &&
             !comment.includes('pengajar'));
     });
@@ -510,12 +589,14 @@ function findStudentNatRule(rules, subnetCidr) {
 function findTeacherNatRule(rules, teacherIp) {
     if (!teacherIp)
         return undefined;
+    const cleanIp = teacherIp.trim().toLowerCase();
     return rules.find((rule) => {
         const action = String(rule.action || '').toLowerCase();
         const chain = String(rule.chain || '').toLowerCase();
+        const srcAddr = String(rule['src-address'] || '').trim().toLowerCase();
         return (chain === 'srcnat' &&
             (action === 'src-nat' || action === 'masquerade') &&
-            String(rule['src-address'] || '') === teacherIp &&
+            srcAddr === cleanIp &&
             hasMatchingWanTarget(rule));
     });
 }
@@ -606,14 +687,46 @@ function summarizeBlacklistResources(listNames, layer7Names) {
 function buildInterfaceAddressMap(rows) {
     const addressMap = new Map();
     for (const row of rows) {
-        const ifaceName = String(row.interface || '');
-        const address = String(row.address || '');
-        if (!ifaceName || !address || addressMap.has(ifaceName) || !address.includes('.') || !address.includes('/')) {
+        const ifaceName = String(row.interface || '').trim();
+        const address = String(row.address || '').trim();
+        if (!ifaceName || !address || !address.includes('.') || !address.includes('/')) {
             continue;
         }
-        addressMap.set(ifaceName, address);
+        if (!addressMap.has(ifaceName)) addressMap.set(ifaceName, address);
+        const lower = ifaceName.toLowerCase();
+        if (!addressMap.has(lower)) addressMap.set(lower, address);
+        const normalized = lower.replace(/\s+/g, '');
+        if (!addressMap.has(normalized)) addressMap.set(normalized, address);
     }
     return addressMap;
+}
+function findInterfaceCidr(iface, addressMap, addressRows) {
+    if (!iface || !iface.name) return null;
+    const name = String(iface.name || '').trim();
+    const lower = name.toLowerCase();
+    const normalized = lower.replace(/\s+/g, '');
+    let cidr = addressMap.get(name) || addressMap.get(lower) || addressMap.get(normalized);
+    if (cidr) return cidr;
+
+    const labCode = extractLabCode(name) || extractLabCode(iface.comment || '');
+    if (labCode && addressRows && Array.isArray(addressRows)) {
+        const match = addressRows.find((row) => {
+            const ifName = String(row.interface || '').toLowerCase();
+            const addr = String(row.address || '');
+            return addr.includes('/') && (ifName.includes(labCode) || extractLabCode(ifName) === labCode);
+        });
+        if (match?.address) return match.address;
+    }
+
+    if (addressRows && Array.isArray(addressRows)) {
+        const match = addressRows.find((row) => {
+            const ifName = String(row.interface || '').toLowerCase();
+            const addr = String(row.address || '');
+            return addr.includes('/') && (lower.includes(ifName) || ifName.includes(lower));
+        });
+        if (match?.address) return match.address;
+    }
+    return null;
 }
 function mapInterface(iface) {
     const disabled = String(iface.disabled ?? 'false').toLowerCase();
@@ -718,10 +831,14 @@ async function getLabInterfaces() {
         const addressMap = buildInterfaceAddressMap(addressRows);
         const managedInterfaces = rows.filter(isManagedInterface).map((row) => {
             const iface = mapInterface(row);
-            const interfaceCidr = addressMap.get(iface.name);
+            const interfaceCidr = findInterfaceCidr(iface, addressMap, addressRows);
             const subnetCidr = networkCidrFromCidr(interfaceCidr);
+            const fallbackMock = mockInterfaces.find(m =>
+                m.name.toLowerCase().replace(/\s+/g, '') === iface.name.toLowerCase().replace(/\s+/g, '') ||
+                (extractLabCode(m.name) && extractLabCode(m.name) === extractLabCode(iface.name))
+            );
+            const teacherIp = teacherIpFromCidr(interfaceCidr) || fallbackMock?.teacherIp || undefined;
             const studentNatRule = findStudentNatRule(natRules, subnetCidr || undefined);
-            const teacherIp = teacherIpFromCidr(interfaceCidr);
             const teacherNatRule = findTeacherNatRule(natRules, teacherIp || undefined);
             const natBlockRule = findNatBlockRule(natRules, iface.name);
             const queueTreeRule = findQueueTreeRule(queueTreeRows, iface);
@@ -1113,6 +1230,10 @@ async function setInternetAccessByNat(interfaceId, internetEnabled) {
         const addressRows = await client.execute('/ip/address/print', {
             '.proplist': 'interface,address,disabled',
         });
+        // PENTING: map alamat harus dibangun di sini. Sebelumnya fungsi ini memakai
+        // `addressMap` yang hanya ada di scope getLabInterfaces() -> ReferenceError
+        // "addressMap is not defined" -> endpoint toggle selalu 500 (tombol mati).
+        const addressMap = buildInterfaceAddressMap(addressRows);
         const iface = interfaceRows
             .filter(isManagedInterface)
             .map(mapInterface)
@@ -1122,10 +1243,13 @@ async function setInternetAccessByNat(interfaceId, internetEnabled) {
             notFound.statusCode = 404;
             throw notFound;
         }
-        const addressMap = buildInterfaceAddressMap(addressRows);
-        const interfaceCidr = addressMap.get(iface.name);
-        const teacherIp = teacherIpFromCidr(interfaceCidr);
-        const subnetCidr = networkCidrFromCidr(interfaceCidr);
+        const interfaceCidr = findInterfaceCidr(iface, addressMap, addressRows);
+        const fallbackMock = mockInterfaces.find(m =>
+            m.name.toLowerCase().replace(/\s+/g, '') === iface.name.toLowerCase().replace(/\s+/g, '') ||
+            (extractLabCode(m.name) && extractLabCode(m.name) === extractLabCode(iface.name))
+        );
+        const teacherIp = teacherIpFromCidr(interfaceCidr) || fallbackMock?.teacherIp || undefined;
+        const subnetCidr = networkCidrFromCidr(interfaceCidr) || (teacherIp ? `${teacherIp.substring(0, teacherIp.lastIndexOf('.'))}.0/26` : null);
         if (!teacherIp || !subnetCidr) {
             const invalidSubnet = new Error(`Subnet untuk ${iface.name} tidak bisa dibaca, jadi status mahasiswa tidak bisa dikontrol`);
             invalidSubnet.statusCode = 400;
@@ -1156,6 +1280,13 @@ async function setInternetAccessByNat(interfaceId, internetEnabled) {
         }
         if (internetEnabled) {
             return { iface, natRuleId: undefined };
+        }
+        // Pengaman: jangan buat rule blokir baru untuk interface yang bukan VLAN lab
+        // (grid memuat semua interface ber-kata "vlan", termasuk hotspot/DMZ/backbone).
+        if (!isKnownLabVlan(iface.name)) {
+            const notLab = new Error(`Interface ${iface.name} bukan VLAN lab dan tidak punya rule NAT mahasiswa, jadi tidak bisa diblokir dari panel ini`);
+            notLab.statusCode = 400;
+            throw notLab;
         }
         const addOptions = {
             chain: 'srcnat',
@@ -1230,7 +1361,14 @@ async function setQueueTreeBandwidth(interfaceId, bandwidthMbps) {
     });
 }
 app.get('/api/config/labs-only-order', (_req, res) => {
-    res.json({ vlans: LABS_ONLY_VLANS });
+    // Satu sumber untuk UI: daftar lab + nilai env lain yang ditampilkan di panel,
+    // supaya tidak ada nilai yang di-hardcode di frontend.
+    res.json({
+        vlans: LABS_ONLY_VLANS,
+        wanInterface: WAN_INTERFACE || WAN_INTERFACE_LIST,
+        uplinkInterface: UPLINK_INTERFACE,
+        labInterfaceMatch: LAB_INTERFACE_TERMS,
+    });
 });
 app.post('/api/login', (req, res) => {
     const pin = String(req.body.pin ?? req.body.password ?? '').trim();
@@ -1636,6 +1774,385 @@ app.get('/api/logs', requireSession, async (_req, res) => {
     }
     catch {
         res.json(localLogs);
+    }
+});
+/* ---------------------------------------------------------------------------
+ * Kontrol internet per MAC address -- kontrol TERPISAH per perangkat (menu "Akses MAC").
+ *
+ * Mekanisme: /ip/firewall/filter chain=forward action=drop src-mac-address=<MAC>
+ * (+ opsional in-interface=<vlan lab>) dengan out-interface = WAN.
+ *   disabled=yes -> rule idle  -> internet AKTIF (perangkat 100% ikut aturan lab)
+ *   disabled=no  -> rule aktif -> internet DIBLOKIR (hanya trafik ke WAN yang di-drop)
+ *
+ * KENAPA BUKAN TABEL NAT (sudah diuji langsung di router, 17 Sep 2026):
+ *   /ip/firewall/nat set disabled=no pada rule chain=srcnat + src-mac-address ->
+ *   "failure: source mac address matching not possible in output and postrouting chains".
+ *   Action drop juga tidak dikenal di chain NAT ("input does not match any value of action").
+ *   Jadi MAC hanya bisa di-match di chain filter; rule NAT per-MAC tidak bisa diaktifkan
+ *   di RouterOS 6.49.13. Rule di sini TIDAK menyentuh rule NAT / VLAN lab sama sekali,
+ *   dan admin pun memakai pola yang sama (38 rule MAC manual di filter chain).
+ *
+ * Menghapus entri = rule dihapus -> perangkat kembali mengikuti menu Access Control (lab).
+ * Hanya rule ber-tag MAC_BLOCK_COMMENT_PREFIX yang boleh diubah/dihapus.
+ * ------------------------------------------------------------------------- */
+const MAC_RULE_PROP_LIST = '.id,chain,action,disabled,comment,src-mac-address,in-interface,out-interface,out-interface-list';
+function macBlockValidationError(message) {
+    const error = new Error(message);
+    error.statusCode = 400;
+    return error;
+}
+function macBlockNotFoundError(message = 'Entri MAC access tidak ditemukan di router') {
+    const error = new Error(message);
+    error.statusCode = 404;
+    return error;
+}
+function normalizeMacBlockInput(payload = {}) {
+    const mac = normalizeMacAddress(payload.mac);
+    if (!mac)
+        throw macBlockValidationError('Format MAC address tidak valid. Gunakan format AA:BB:CC:DD:EE:FF');
+    const rawAction = String(payload.action ?? 'drop').trim().toLowerCase();
+    if (!MAC_RULE_ACTIONS.includes(rawAction))
+        throw macBlockValidationError(`Action rule harus salah satu dari: ${MAC_RULE_ACTIONS.join(', ')}`);
+    return {
+        mac,
+        label: String(payload.label ?? '').trim().slice(0, 64),
+        scope: String(payload.scope ?? '').trim(),
+        action: rawAction,
+        internetEnabled: payload.internetEnabled === undefined ? true : toBoolean(payload.internetEnabled),
+    };
+}
+async function printMacFilterRows(client) {
+    return client.execute('/ip/firewall/filter/print', { '.proplist': MAC_RULE_PROP_LIST });
+}
+async function printMacNatRows(client) {
+    return client.execute('/ip/firewall/nat/print', { '.proplist': MAC_RULE_PROP_LIST });
+}
+function findManagedMacRule(rows, ruleId) {
+    return rows.find((rule) => rule['.id'] === ruleId && isMacBlockRule(rule));
+}
+// Rule MAC harus berada SEBELUM rule accept apa pun di chain forward, kalau tidak blokir
+// bisa dilewati (mis. rule whitelist youtube/pengajar).
+function resolveMacPlaceBefore(filterRows) {
+    if (MAC_PLACE_BEFORE)
+        return MAC_PLACE_BEFORE;
+    const firstForwardRule = filterRows.find((rule) => String(rule.chain || '').toLowerCase() === 'forward' && rule['.id']);
+    return firstForwardRule ? firstForwardRule['.id'] : '';
+}
+function macRuleFields(row) {
+    const parsed = parseMacBlockComment(row.comment);
+    const ruleAction = normalizeMacRuleAction(row.action, parsed.action || 'drop');
+    return {
+        id: row['.id'],
+        mac: normalizeMacAddress(row['src-mac-address']) || parsed.macFromComment,
+        label: parsed.label,
+        scope: String(row['in-interface'] || ''),
+        action: ruleAction,
+        outInterface: String(row['out-interface'] || row['out-interface-list'] || ''),
+        // disabled=yes -> rule tidak aktif (internet mengikuti aturan lab / blokir lain);
+        // disabled=no  -> rule aktif (drop = internet mati, accept = perangkat diizinkan).
+        internetEnabled: isTruthyRouterDisabled(row.disabled),
+        disabled: isTruthyRouterDisabled(row.disabled),
+        ruleActive: !isTruthyRouterDisabled(row.disabled),
+    };
+}
+function mapUnmanagedMacRule(row, table) {
+    return {
+        id: row['.id'],
+        table,
+        chain: String(row.chain || ''),
+        action: String(row.action || ''),
+        mac: normalizeMacAddress(row['src-mac-address']) || String(row['src-mac-address']),
+        comment: String(row.comment || ''),
+        scope: String(row['in-interface'] || ''),
+        active: !isTruthyRouterDisabled(row.disabled),
+    };
+}
+function managedMacRules(filterRows) {
+    return filterRows.filter((rule) => String(rule.chain || '').toLowerCase() === 'forward' && isMacBlockRule(rule));
+}
+async function assertInterfaceExists(client, interfaceName) {
+    if (!interfaceName)
+        return true;
+    const rows = await client.execute('/interface/print', { '.proplist': 'name' });
+    if (!rows.some((row) => String(row.name || '') === interfaceName))
+        throw macBlockValidationError(`Interface ${interfaceName} tidak ditemukan di router`);
+    return true;
+}
+function buildMacRuleOptions(input, placeBefore) {
+    const options = {
+        chain: 'forward',
+        action: normalizeMacRuleAction(input.action),
+        'src-mac-address': input.mac,
+        comment: macBlockComment(input.mac, input.label, input.action),
+        disabled: input.internetEnabled ? 'yes' : 'no',
+    };
+    withWanMatcher(options);
+    if (input.scope)
+        options['in-interface'] = input.scope;
+    if (placeBefore)
+        options['place-before'] = placeBefore;
+    return options;
+}
+async function addMacRuleRow(client, options) {
+    try {
+        return await client.execute('/ip/firewall/filter/add', options);
+    }
+    catch (error) {
+        if (!options['place-before'])
+            throw error;
+        const retryOptions = { ...options };
+        delete retryOptions['place-before'];
+        return client.execute('/ip/firewall/filter/add', retryOptions);
+    }
+}
+// CATATAN: RouterApiClient hanya punya satu queue balasan, jadi semua perintah pada satu
+// koneksi WAJIB sekuensial (jangan Promise.all dua execute pada client yang sama).
+async function readMacAccessData() {
+    return withRouter(async (client) => {
+        const filterRows = await printMacFilterRows(client);
+        const natRows = await printMacNatRows(client);
+        const entries = managedMacRules(filterRows).map((row) => {
+            const fields = macRuleFields(row);
+            return { ...fields, table: 'filter', ruleTarget: `forward / ${fields.action}` };
+        });
+        const unmanaged = [
+            ...filterRows
+                .filter((rule) => rule['src-mac-address'] && !isMacBlockRule(rule))
+                .map((rule) => mapUnmanagedMacRule(rule, 'filter')),
+            ...natRows
+                .filter((rule) => rule['src-mac-address'] && !isMacBlockRule(rule))
+                .map((rule) => mapUnmanagedMacRule(rule, 'nat')),
+        ];
+        return { entries, unmanaged };
+    });
+}
+async function addMacBlock(payload = {}) {
+    const input = normalizeMacBlockInput(payload);
+    return withRouter(async (client) => {
+        const filterRows = await printMacFilterRows(client);
+        const duplicateMac = managedMacRules(filterRows).find((rule) => (normalizeMacAddress(rule['src-mac-address']) ||
+            parseMacBlockComment(rule.comment).macFromComment) === input.mac);
+        if (duplicateMac) {
+            const conflict = new Error(`${input.mac} sudah terdaftar di router — ubah entri yang ada atau hapus dulu`);
+            conflict.statusCode = 409;
+            throw conflict;
+        }
+        await assertInterfaceExists(client, input.scope);
+        const addRows = await addMacRuleRow(client, buildMacRuleOptions(input, resolveMacPlaceBefore(filterRows)));
+        pushLocalLog(`Entri MAC ${input.mac} ditambahkan (kontrol terpisah, internet ${input.internetEnabled ? 'aktif' : 'diblokir'})`, input.internetEnabled ? 'info' : 'warning');
+        // Reply /ip/firewall/filter/add mengirim "=ret=<.id>"; sebagian versi RouterOS tidak
+        // mengirim ".id" sehingga perlu fallback baca ulang tabel filter dan cocokkan MAC.
+        let ruleId = addRows[0]?.['.id'] || addRows[0]?.ret || '';
+        if (!ruleId) {
+            const verifyRows = await printMacFilterRows(client);
+            const created = managedMacRules(verifyRows).find((rule) => (normalizeMacAddress(rule['src-mac-address']) ||
+                parseMacBlockComment(rule.comment).macFromComment) === input.mac);
+            ruleId = created?.['.id'] || '';
+        }
+        const storedOptions = buildMacRuleOptions(input, '');
+        return {
+            id: ruleId,
+            mac: input.mac,
+            label: input.label,
+            scope: input.scope,
+            action: input.action,
+            table: 'filter',
+            ruleTarget: `forward / ${input.action}`,
+            outInterface: String(storedOptions['out-interface'] || storedOptions['out-interface-list'] || ''),
+            internetEnabled: input.internetEnabled,
+            disabled: input.internetEnabled,
+        };
+    });
+}
+async function updateMacBlock(ruleId, patch = {}) {
+    return withRouter(async (client) => {
+        const filterRows = await printMacFilterRows(client);
+        const target = findManagedMacRule(filterRows, ruleId);
+        if (!target)
+            throw macBlockNotFoundError();
+        const current = macRuleFields(target);
+        const nextMac = patch.mac === undefined ? current.mac : normalizeMacAddress(patch.mac);
+        if (!nextMac)
+            throw macBlockValidationError('Format MAC address tidak valid. Gunakan format AA:BB:CC:DD:EE:FF');
+        const nextLabel = patch.label === undefined ? current.label : String(patch.label).trim().slice(0, 64);
+        const nextScope = patch.scope === undefined ? current.scope : String(patch.scope).trim();
+        const nextAction = patch.action === undefined ? current.action : normalizeMacRuleAction(patch.action, '');
+        if (!nextAction)
+            throw macBlockValidationError(`Action rule harus salah satu dari: ${MAC_RULE_ACTIONS.join(', ')}`);
+        const nextInternetEnabled = patch.internetEnabled === undefined ? current.internetEnabled : toBoolean(patch.internetEnabled);
+        if (nextMac !== current.mac || nextScope !== current.scope) {
+            const duplicate = managedMacRules(filterRows).find((rule) => rule['.id'] !== ruleId &&
+                (normalizeMacAddress(rule['src-mac-address']) || parseMacBlockComment(rule.comment).macFromComment) === nextMac);
+            if (duplicate) {
+                const conflict = new Error(`${nextMac} sudah terdaftar di router — ubah entri yang ada atau hapus dulu`);
+                conflict.statusCode = 409;
+                throw conflict;
+            }
+        }
+        if (patch.scope !== undefined && nextScope !== current.scope)
+            await assertInterfaceExists(client, nextScope);
+        // RouterOS mengabaikan nilai kosong pada set in-interface -> kalau scope dilepas,
+        // rule dihapus lalu dibuat ulang tanpa in-interface (field lain dipertahankan).
+        if (patch.scope !== undefined && !nextScope && current.scope) {
+            await client.execute('/ip/firewall/filter/remove', { '.id': ruleId });
+            // place-before HARUS dihitung ulang setelah rule lama dihapus: kalau tidak,
+            // kandidat teratas bisa menunjuk rule itu sendiri -> add gagal & rule jatuh ke bawah.
+            const freshRows = await printMacFilterRows(client);
+            const options = buildMacRuleOptions({ mac: nextMac, label: nextLabel, scope: '', action: nextAction, internetEnabled: nextInternetEnabled }, resolveMacPlaceBefore(freshRows));
+            const addRows = await addMacRuleRow(client, options);
+            let newId = addRows[0]?.['.id'] || addRows[0]?.ret || '';
+            if (!newId) {
+                const verifyRows = await printMacFilterRows(client);
+                const created = managedMacRules(verifyRows).find((rule) => (normalizeMacAddress(rule['src-mac-address']) || '') === nextMac);
+                newId = created?.['.id'] || '';
+            }
+            pushLocalLog(`Scope lab untuk ${nextMac} dilepas (rule dibuat ulang)`, 'info');
+            return {
+                id: newId,
+                mac: nextMac,
+                label: nextLabel,
+                scope: '',
+                table: 'filter',
+                action: nextAction,
+                ruleTarget: `forward / ${nextAction}`,
+                outInterface: current.outInterface,
+                internetEnabled: nextInternetEnabled,
+                disabled: nextInternetEnabled,
+            };
+        }
+        const setOptions = { '.id': ruleId };
+        if (patch.internetEnabled !== undefined)
+            setOptions.disabled = nextInternetEnabled ? 'yes' : 'no';
+        if (patch.mac !== undefined || patch.label !== undefined || patch.action !== undefined)
+            setOptions.comment = macBlockComment(nextMac, nextLabel, nextAction);
+        if (patch.mac !== undefined)
+            setOptions['src-mac-address'] = nextMac;
+        if (patch.action !== undefined)
+            setOptions.action = nextAction;
+        // in-interface hanya dikirim bila ada nilainya: RouterOS menolak nilai kosong
+        // ("ambiguous value of interface, more than one possible value matches input").
+        // Melepas scope ditangani jalur hapus + buat ulang di atas.
+        if (patch.scope !== undefined && nextScope)
+            setOptions['in-interface'] = nextScope;
+        if (Object.keys(setOptions).length === 1)
+            return { ...current, table: 'filter', ruleTarget: `forward / ${current.action}` };
+        await client.execute('/ip/firewall/filter/set', setOptions);
+        if (patch.internetEnabled !== undefined && patch.mac === undefined && patch.label === undefined && patch.scope === undefined)
+            pushLocalLog(`Internet ${nextMac} ${nextInternetEnabled ? 'dibuka' : 'diblokir'} (kontrol per-MAC)`, nextInternetEnabled ? 'success' : 'warning');
+        else
+            pushLocalLog(`Entri MAC ${current.mac} diubah${nextMac !== current.mac ? ` -> ${nextMac}` : ''}${nextScope ? ` (${nextScope})` : ' (semua lab)'}`, 'info');
+        return {
+            id: ruleId,
+            mac: nextMac,
+            label: nextLabel,
+            scope: nextScope,
+            table: 'filter',
+            action: nextAction,
+            ruleTarget: `forward / ${nextAction}`,
+            outInterface: current.outInterface,
+            internetEnabled: nextInternetEnabled,
+            disabled: nextInternetEnabled,
+        };
+    });
+}
+async function removeMacBlock(ruleId) {
+    return withRouter(async (client) => {
+        const filterRows = await printMacFilterRows(client);
+        const target = findManagedMacRule(filterRows, ruleId);
+        if (!target)
+            throw macBlockNotFoundError('Entri MAC access tidak ditemukan (hanya rule ber-tag LabGuard yang bisa dihapus)');
+        const mapped = macRuleFields(target);
+        await client.execute('/ip/firewall/filter/remove', { '.id': ruleId });
+        pushLocalLog(`Entri MAC ${mapped.mac} dihapus — perangkat kembali mengikuti kontrol lab`, 'warning');
+        return { ...mapped, table: 'filter' };
+    });
+}
+app.get('/api/mac-access', requireSession, async (_req, res) => {
+    if (!HAS_CONFIG) {
+        return res.json({ success: true, simulated: true, entries: mockMacBlocks.map((item) => ({ ...item })), unmanaged: [] });
+    }
+    try {
+        const { entries, unmanaged } = await readMacAccessData();
+        res.json({ success: true, entries, unmanaged });
+    }
+    catch (error) {
+        res.status(error.statusCode || 500).json({ success: false, error: formatRouterError(error) });
+    }
+});
+app.post('/api/mac-access', requireSession, async (req, res) => {
+    let input;
+    try {
+        input = normalizeMacBlockInput(req.body || {});
+    }
+    catch (error) {
+        return res.status(error.statusCode || 400).json({ success: false, error: formatRouterError(error) });
+    }
+    if (!HAS_CONFIG) {
+        const duplicate = mockMacBlocks.find((item) => item.mac === input.mac);
+        if (duplicate)
+            return res.status(409).json({ success: false, error: `${input.mac} sudah terdaftar` });
+        const created = { id: `mock-mac-${Date.now()}`, ...input, table: 'filter', ruleTarget: `forward / ${input.action}`, outInterface: UPLINK_INTERFACE, disabled: input.internetEnabled };
+        mockMacBlocks = [created, ...mockMacBlocks];
+        pushLocalLog(`Entri MAC ${input.mac} ditambahkan (simulasi)`, 'info');
+        return res.json({ success: true, simulated: true, entry: created });
+    }
+    try {
+        const entry = await addMacBlock(input);
+        res.json({ success: true, entry });
+    }
+    catch (error) {
+        res.status(error.statusCode || 500).json({ success: false, error: formatRouterError(error) });
+    }
+});
+app.patch('/api/mac-access/:ruleId', requireSession, async (req, res) => {
+    const ruleId = decodeURIComponent(req.params.ruleId);
+    const body = req.body || {};
+    if (body.mac !== undefined && !normalizeMacAddress(body.mac)) {
+        return res.status(400).json({ success: false, error: 'Format MAC address tidak valid. Gunakan format AA:BB:CC:DD:EE:FF' });
+    }
+    if (body.action !== undefined && !MAC_RULE_ACTIONS.includes(String(body.action).trim().toLowerCase())) {
+        return res.status(400).json({ success: false, error: `Action rule harus salah satu dari: ${MAC_RULE_ACTIONS.join(', ')}` });
+    }
+    if (!HAS_CONFIG) {
+        const found = mockMacBlocks.find((item) => item.id === ruleId);
+        if (!found)
+            return res.status(404).json({ success: false, error: 'Entri MAC tidak ditemukan' });
+        const updated = {
+            ...found,
+            mac: body.mac === undefined ? found.mac : normalizeMacAddress(body.mac),
+            label: body.label === undefined ? found.label : String(body.label).trim(),
+            scope: body.scope === undefined ? found.scope : String(body.scope).trim(),
+            action: body.action === undefined ? found.action : normalizeMacRuleAction(body.action, found.action),
+            internetEnabled: body.internetEnabled === undefined ? found.internetEnabled : toBoolean(body.internetEnabled),
+        };
+        mockMacBlocks = mockMacBlocks.map((item) => (item.id === ruleId ? updated : item));
+        pushLocalLog(`Entri MAC ${updated.mac} diperbarui (simulasi)`, 'info');
+        return res.json({ success: true, simulated: true, entry: updated });
+    }
+    try {
+        const entry = await updateMacBlock(ruleId, body);
+        res.json({ success: true, entry });
+    }
+    catch (error) {
+        res.status(error.statusCode || 500).json({ success: false, error: formatRouterError(error) });
+    }
+});
+app.delete('/api/mac-access/:ruleId', requireSession, async (req, res) => {
+    const ruleId = decodeURIComponent(req.params.ruleId);
+    if (!HAS_CONFIG) {
+        const found = mockMacBlocks.find((item) => item.id === ruleId);
+        if (!found)
+            return res.status(404).json({ success: false, error: 'Entri MAC tidak ditemukan' });
+        mockMacBlocks = mockMacBlocks.filter((item) => item.id !== ruleId);
+        pushLocalLog(`Entri MAC ${found.mac} dihapus (simulasi)`, 'warning');
+        return res.json({ success: true, simulated: true, entry: found });
+    }
+    try {
+        const entry = await removeMacBlock(ruleId);
+        res.json({ success: true, entry });
+    }
+    catch (error) {
+        res.status(error.statusCode || 500).json({ success: false, error: formatRouterError(error) });
     }
 });
 async function setupVite() {

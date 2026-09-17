@@ -47,6 +47,40 @@ Saat tombol `On Inet Mhs` ditekan:
 - NAT mahasiswa di-enable kembali
 - internet mahasiswa kembali aktif
 
+### Access Control per MAC Address (menu terpisah)
+
+Fitur ini punya **menu/tab sendiri** (`Akses MAC` / `MAC Access`) di sebelah tab Access Control,
+Site Policy dan Monitoring — terpisah dari toggle lab/VLAN.
+Isinya:
+
+- tambah MAC address + keterangan (+ pilihan interface lab, opsional) + **action rule: `drop` / `accept`**
+- tombol `Ubah` per entri (edit MAC / keterangan / scope lab / action)
+- tombol `Blokir Internet` / `Buka Internet` (entri `drop`) atau `Aktifkan rule` / `Nonaktifkan rule` (entri `accept`) per entri
+- tombol `Hapus` per entri (dengan konfirmasi)
+
+Arti action:
+- **`drop`** → perangkat itu **diblokir** ke internet (trafik ke WAN di-drop; layanan internal lab tetap jalan)
+- **`accept`** → perangkat itu **diizinkan** (rule diletakkan paling atas `chain=forward` hanya untuk trafik ke WAN; NAT lab tetap berjalan normal). Rule ini tidak memblokir apa pun — ia mengecualikan perangkat dari drop di chain forward.
+- status rule: `rule aktif` (`disabled=no`) = action berlaku; `rule idle` (`disabled=yes`) = action tidak berlaku → perangkat mengikuti aturan lab/NAT seperti biasa
+
+Saat internet sebuah MAC diblokir:
+- dibuat filter rule `chain=forward action=drop src-mac-address=<MAC> out-interface=<WAN>`
+  dengan comment bertanda `LABGUARD_MAC_NO_INTERNET:<MAC> | <keterangan>`
+- rule di-`place-before` rule forward paling atas, sehingga tidak bisa dilewati rule accept lain
+- perangkat **tetap bisa mengakses layanan internal lab** (NAT/lab tidak diubah), hanya trafik ke WAN yang di-drop
+- saat internet dibuka kembali, rule hanya di-`disabled=yes` (tidak dihapus) sehingga status tetap terlihat di panel
+- entri dihapus = rule dihapus → perangkat **kembali 100% mengikuti kontrol lab** (menu Access Control)
+
+Catatan mekanisme (17 Sep 2026, diuji langsung di router): rule ini **tidak** memakai tabel
+`/ip/firewall/nat`. RouterOS 6.49.13 menolak rule NAT berbasis MAC —
+`/ip/firewall/nat set disabled=no` pada `chain=srcnat` + `src-mac-address` menjawab
+`"failure: source mac address matching not possible in output and postrouting chains"`
+(dan `action=drop` tidak dikenal di chain NAT). Jadi MAC hanya bisa di-match di chain filter —
+sama seperti pola manual admin (mis. `matikan inet 461 mac ...`). Rule NAT lab/VLAN tidak pernah disentuh.
+
+Rule MAC yang dibuat manual di luar Labguard (mis. `matikan inet 461 mac ...`) ditampilkan
+read-only di panel dan **tidak bisa** diubah/dihapus dari Labguard.
+
 ### Teacher Status
 
 Status teacher tidak memakai ping device. Status dibaca dari:
@@ -125,6 +159,11 @@ UPLINK_INTERFACE="out inet"
 
 LABGUARD_NAT_BLOCK_PREFIX="FTI"
 LABGUARD_NAT_PLACE_BEFORE="0"
+
+# Kontrol internet per MAC address (Access Control)
+LABGUARD_MAC_BLOCK_PREFIX="LABGUARD_MAC_NO_INTERNET"
+LABGUARD_MAC_PLACE_BEFORE=""
+
 LAB_TEACHER_HOST_SUFFIX="2"
 
 ADMIN_PIN="xxxxxx"
@@ -138,6 +177,22 @@ Catatan:
 - `WAN_INTERFACE` dipakai untuk pencocokan NAT keluar internet
 - `UPLINK_INTERFACE` dipakai untuk monitoring backbone real-time
 - `LAB_INTERFACE_MATCH="vlan"` berarti interface yang mengandung kata `vlan` akan masuk ke daftar lab
+
+### Env → UI (satu sumber, tidak ada nilai yang di-hardcode di frontend)
+
+Frontend mengambil nilai env dari `GET /api/config/labs-only-order` saat halaman dimuat:
+
+| Env | Tampil di UI |
+|---|---|
+| `LABS_ONLY_VLANS` | tombol **Hanya Lab** (menyaring + mengurutkan kartu sesuai daftar env) |
+| `WAN_INTERFACE` / `WAN_INTERFACE_LIST` | chip `WAN:` pada tiap entri menu Akses MAC + label kartu uplink (fallback) |
+| `UPLINK_INTERFACE` | judul kartu **Backbone Uplink** di menu Pemantauan Trafik |
+| `LAB_INTERFACE_MATCH` | daftar interface yang muncul sebagai kartu lab |
+| `LAB_TEACHER_HOST_SUFFIX` | baris `NAT DOSEN <ip>` pada kartu lab |
+
+Konsekuensi: **mengubah `.env` butuh restart proses server** (`npm start`; pada `npm run dev` watcher
+sudah otomatis restart) dan **muat ulang halaman** agar UI membaca nilai baru.
+`LABGUARD_NAT_*` dan `LABGUARD_MAC_*` bersifat internal (nama tag rule di router), tidak ditampilkan di UI.
 
 ## Instalasi
 
@@ -193,6 +248,10 @@ Beberapa endpoint backend yang dipakai frontend:
 - `GET /api/router/uplink-traffic`
 - `POST /api/interfaces/:id/toggle`
 - `POST /api/interfaces/:id/bandwidth`
+- `GET /api/mac-access`
+- `POST /api/mac-access`
+- `PATCH /api/mac-access/:ruleId`
+- `DELETE /api/mac-access/:ruleId`
 - `GET /api/router/clients`
 - `GET /api/logs`
 

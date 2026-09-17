@@ -1,10 +1,11 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 import React, { useEffect, useRef, useState } from 'react';
-import { WifiOff, ShieldCheck, RefreshCcw, Activity, Settings as SettingsIcon, AlertCircle, Layers, Search, CheckCircle2, XCircle, Unlock, Lock, LogIn, KeyRound, Eye, EyeOff, ShieldAlert, ChevronDown } from 'lucide-react';
+import { WifiOff, ShieldCheck, RefreshCcw, Activity, Settings as SettingsIcon, AlertCircle, Layers, Search, CheckCircle2, XCircle, Unlock, Lock, LogIn, KeyRound, Eye, EyeOff, ShieldAlert, ChevronDown, Laptop } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { AreaChart, Area, ResponsiveContainer } from 'recharts';
 import mikrotikLogo from './assets/mikrotik-logo.svg';
 import translations from './i18n.js';
+import MacAccessControl from './MacAccessControl.jsx';
 // Simulated traffic data generator
 const generateHistory = () => {
     return Array.from({ length: 20 }, (_, i) => ({
@@ -27,7 +28,7 @@ const formatRateMbps = (value) => {
         ? `${(normalized / 1_000_000).toFixed(1).replace(/\.0$/, '')} Mbps`
         : `${(normalized / 1_000).toFixed(0)} Kbps`;
 };
-function UplinkTrafficCard({ uplinkTraffic, t }) {
+function UplinkTrafficCard({ uplinkTraffic, t, fallbackName = '' }) {
     return (<div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-4 sm:p-5 border border-gray-100 dark:border-white/5 shadow-sm">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
@@ -37,7 +38,7 @@ function UplinkTrafficCard({ uplinkTraffic, t }) {
             </div>
             <div className="min-w-0">
               <p className="text-[9px] font-bold uppercase tracking-wider text-gray-400">{t('backboneUplink')}</p>
-              <h3 className="text-sm sm:text-base font-bold uppercase tracking-tight text-white truncate">{uplinkTraffic?.name || 'ether2-backboneUKSW'}</h3>
+              <h3 className="text-sm sm:text-base font-bold uppercase tracking-tight text-white truncate">{uplinkTraffic?.name || fallbackName || 'uplink'}</h3>
             </div>
           </div>
         </div>
@@ -77,6 +78,7 @@ function SitePolicySection({ title, subtitle, emptyLabel, items, renderItem, hid
     </div>);
 }
 const LABS_ONLY_ORDER_FALLBACK = [
+    'vlan431-RSNA',
     'vlan461',
     'vlan463',
     'vlan467',
@@ -89,11 +91,11 @@ const LABS_ONLY_ORDER_FALLBACK = [
     'vlan454',
     'vlan453',
     'vlan451',
-    'vlan431',
     'vlan402',
-    'vlan506',
-    'vlan507',
-    'vlan301',
+    'vlan506-ORACLE',
+    'vlan507-RSNA',
+    'vlan509',
+    'vlan_600_audit',
 ];
 const normalizeLabName = (value) => value.toLowerCase().replace(/\s+/g, '');
 const addressListNameFromReference = (reference) => reference.startsWith('Address List: ') ? reference.replace('Address List: ', '') : '';
@@ -133,7 +135,8 @@ export default function App() {
     const [trafficHistory, setTrafficHistory] = useState({});
     const [clients, setClients] = useState([]);
     const [logs, setLogs] = useState([]);
-    const [uplinkTraffic, setUplinkTraffic] = useState({ id: 'uplink', name: 'ether2-backboneUKSW', rxRate: 0, txRate: 0 });
+    const [envConfig, setEnvConfig] = useState({ wanInterface: '', uplinkInterface: '' });
+    const [uplinkTraffic, setUplinkTraffic] = useState({ id: 'uplink', name: '', rxRate: 0, txRate: 0 });
     const [sitePolicies, setSitePolicies] = useState({
         blockRules: [],
         whitelistRules: [],
@@ -169,6 +172,10 @@ export default function App() {
                 if (Array.isArray(data.vlans) && data.vlans.length > 0) {
                     setLabsOnlyOrder(data.vlans);
                 }
+                setEnvConfig({
+                    wanInterface: String(data.wanInterface || ''),
+                    uplinkInterface: String(data.uplinkInterface || ''),
+                });
             })
             .catch(() => { /* keep fallback */ });
     }, []);
@@ -601,11 +608,13 @@ export default function App() {
         const isLab = (item) => {
             const normalizedName = normalizeLabName(item.name);
             const comment = (item.comment || '').toLowerCase();
-            return labsOnlyOrderIndex.has(normalizedName) ||
-                normalizedName.includes('lab') ||
-                normalizedName.includes('vlan') ||
-                normalizedName.startsWith('4') ||
-                comment.includes('lab');
+            // Daftar lab yang sah datang dari env LABS_ONLY_VLANS (lewat /api/config).
+            // Kalau daftar kosong (env tidak diisi), pakai pola lama supaya UI tidak kosong.
+            if (labsOnlyOrderIndex.size === 0) {
+                return normalizedName.includes('lab') || normalizedName.includes('vlan') ||
+                    normalizedName.startsWith('4') || comment.includes('lab');
+            }
+            return labsOnlyOrderIndex.has(normalizedName) || comment.includes('lab');
         };
         if (showOnlyLabs)
             return isLab(iface) && matchesSearch;
@@ -1070,7 +1079,7 @@ export default function App() {
           </div>)}
 
         <div className="space-y-6 sm:space-y-8">
-          <div className="flex p-1 bg-zinc-900 rounded-xl w-full max-w-xl mx-auto mb-6 sm:mb-8 border border-zinc-800">
+          <div className="flex p-1 bg-zinc-900 rounded-xl w-full max-w-2xl mx-auto mb-6 sm:mb-8 border border-zinc-800">
             <button onClick={() => setActiveTab('control')} className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-[9px] font-bold uppercase tracking-wider transition-all ${activeTab === 'control'
                     ? 'bg-blue-600 text-white shadow-md'
                     : 'text-gray-400 hover:text-blue-500'}`}>
@@ -1088,6 +1097,12 @@ export default function App() {
                     : 'text-gray-400 hover:text-blue-500'}`}>
               <ShieldAlert size={13}/>
               {t('sitePolicy')}
+            </button>
+            <button onClick={() => setActiveTab('mac-access')} className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-[9px] font-bold uppercase tracking-wider transition-all ${activeTab === 'mac-access'
+                    ? 'bg-amber-600 text-white shadow-md'
+                    : 'text-gray-400 hover:text-amber-500'}`}>
+              <Laptop size={13}/>
+              {t('macAccessTab')}
             </button>
           </div>
 
@@ -1112,7 +1127,7 @@ export default function App() {
                       </button>
                     </div>
                   </div>
-                  <UplinkTrafficCard uplinkTraffic={uplinkTraffic} t={t}/>
+                  <UplinkTrafficCard uplinkTraffic={uplinkTraffic} t={t} fallbackName={envConfig.uplinkInterface || envConfig.wanInterface}/>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6 gap-4">
                     <AnimatePresence mode="popLayout">
                       {filteredInterfaces.length > 0 ? (filteredInterfaces.map((iface, idx) => (<motion.div key={iface.id} initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, scale: 0.98 }} transition={{ delay: idx * 0.01 }} className="bg-white dark:bg-[#1C1C1E] rounded-xl p-4 border border-gray-100 dark:border-white/5 shadow-sm hover:border-blue-500/30 transition-all group flex flex-col h-full">
@@ -1346,6 +1361,8 @@ export default function App() {
                           </div>)}/>)}
                   </div>
                 </div>
+              </motion.div>) : activeTab === 'mac-access' ? (<motion.div key="mac-access" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: 0.2 }} className="space-y-6 sm:space-y-8">
+                <MacAccessControl authorizedFetch={authorizedFetch} interfaces={interfaces} t={t} onError={(message) => setError(message)} standalone/>
               </motion.div>) : (<motion.div key="control" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: 0.2 }} className="space-y-6 sm:space-y-8">
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5 sm:gap-6 px-1 sm:px-4">
                   <div className="space-y-1">
@@ -1383,7 +1400,7 @@ export default function App() {
                             </div>
                           </div>
                           <div className={`px-2 py-0.5 rounded text-[8px] font-bold uppercase border shrink-0 ${iface.enabled ? 'border-blue-500/20 text-blue-500 bg-blue-500/10' : 'border-red-500/20 text-red-500 bg-red-500/10'}`}>
-                            {iface.enabled ? t('accessActive') : t('access Inactive')}
+                            {iface.enabled ? t('accessActive') : t('accessInactive')}
                           </div>
                         </div>
 
@@ -1409,7 +1426,7 @@ export default function App() {
                             </div>
                             <div className="text-right min-w-0">
                               <p className="text-[8px] font-bold uppercase tracking-wider text-gray-400">{t('lecturerNat')}</p>
-                              <p className="text-[10px] font-bold text-gray-300 dark:text-gray-500 truncate">{iface.teacherIp || '--'}</p>
+                              <p className="text-[11px] font-extrabold text-blue-600 dark:text-blue-400 truncate">{iface.teacherIp || '--'}</p>
                               <div className={`mt-1 inline-flex items-center px-2 py-0.5 rounded text-[8px] font-bold uppercase border ${iface.teacherInternetEnabled
                                       ? 'border-emerald-500/20 text-emerald-400 bg-emerald-500/10'
                                       : 'border-rose-500/20 text-rose-400 bg-rose-500/10'}`}>
