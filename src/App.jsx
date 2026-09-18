@@ -1,5 +1,5 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { WifiOff, ShieldCheck, RefreshCcw, Activity, Settings as SettingsIcon, AlertCircle, Layers, Search, CheckCircle2, XCircle, Unlock, Lock, LogIn, KeyRound, Eye, EyeOff, ShieldAlert, ChevronDown, Laptop } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { AreaChart, Area, ResponsiveContainer } from 'recharts';
@@ -191,13 +191,16 @@ export default function App() {
             document.body.style.backgroundColor = '';
         };
     }, []);
-    const clearSession = () => {
+    // clearSession & authorizedFetch WAJIB stabil (useCallback): keduanya dipakai sebagai
+    // dependensi effect di komponen anak. Kalau identitasnya berubah tiap render, effect anak
+    // ikut jalan tiap render -> fetch berulang tanpa henti (menu MAC access "loading" terus).
+    const clearSession = useCallback(() => {
         setIsAuthenticated(false);
         setSessionToken('');
         localStorage.removeItem(SESSION_TOKEN_KEY);
         localStorage.removeItem(LEGACY_AUTH_KEY);
         sessionStorage.removeItem(SESSION_TOKEN_KEY);
-    };
+    }, []);
     const saveSession = (token, remember) => {
         setSessionToken(token);
         setIsAuthenticated(true);
@@ -211,7 +214,7 @@ export default function App() {
             localStorage.removeItem(SESSION_TOKEN_KEY);
         }
     };
-    const authorizedFetch = async (input, init = {}) => {
+    const authorizedFetch = useCallback(async (input, init = {}) => {
         const headers = {
             ...init.headers,
             Authorization: `Bearer ${sessionToken}`,
@@ -222,7 +225,7 @@ export default function App() {
             throw new Error('Session expired. Silakan login ulang.');
         }
         return response;
-    };
+    }, [sessionToken, clearSession]);
     const ensureTrafficHistory = (ifaces) => {
         setTrafficHistory(prev => {
             const next = { ...prev };

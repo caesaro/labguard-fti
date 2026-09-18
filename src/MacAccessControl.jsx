@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Ban, CheckCircle2, Loader2, Pencil, Plus, RefreshCcw, Save, Search, ShieldOff, Trash2, Wifi, X } from 'lucide-react';
 
 const MAC_PATTERN = /^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$/;
@@ -19,11 +19,20 @@ export default function MacAccessControl({ authorizedFetch, interfaces = [], t, 
     const [savingEdit, setSavingEdit] = useState(false);
     const tr = useCallback((key) => (t ? t(key) : key), [t]);
 
-    const load = useCallback(async ({ silent = false } = {}) => {
+    // onError dari parent biasanya arrow function baru tiap render; simpan di ref supaya
+    // identitas `load` tidak ikut berubah tiap render (pemicu fetch berulang).
+    const onErrorRef = useRef(onError);
+    useEffect(() => {
+        onErrorRef.current = onError;
+    }, [onError]);
+
+    const load = useCallback(async ({ silent = false, refresh = false } = {}) => {
         if (!silent)
             setLoading(true);
         try {
-            const response = await authorizedFetch('/api/mac-access');
+            // Muat data utama via backend (backend punya cache pendek + dedupe in-flight).
+            // refresh=1 memaksa backend membaca ulang dari router (dipakai tombol RELOAD).
+            const response = await authorizedFetch(`/api/mac-access${refresh ? '?refresh=1' : ''}`);
             const data = await response.json().catch(() => ({}));
             if (!response.ok)
                 throw new Error(data?.error || 'Gagal memuat daftar MAC access.');
@@ -31,16 +40,22 @@ export default function MacAccessControl({ authorizedFetch, interfaces = [], t, 
             setUnmanaged(Array.isArray(data.unmanaged) ? data.unmanaged : []);
         }
         catch (error) {
-            if (onError)
-                onError(error.message || 'Gagal memuat daftar MAC access.');
+            if (onErrorRef.current)
+                onErrorRef.current(error.message || 'Gagal memuat daftar MAC access.');
         }
         finally {
             setLoading(false);
         }
-    }, [authorizedFetch, onError]);
+    }, [authorizedFetch]);
 
+    // Muat sekali saat komponen pertama tampil. Guard ref mencegah fetch berulang walaupun
+    // identitas `load` berubah (mis. parent re-render) — dulu ini bikin spinner tak berhenti.
+    const initialLoadRef = useRef(false);
     useEffect(() => {
-        load();
+        if (initialLoadRef.current)
+            return;
+        initialLoadRef.current = true;
+        load({ refresh: true });
     }, [load]);
 
     const scopeOptions = useMemo(() => {
@@ -204,7 +219,7 @@ export default function MacAccessControl({ authorizedFetch, interfaces = [], t, 
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={16}/>
             <input type="text" placeholder={tr('macSearchPlaceholder')} value={search} onChange={(e) => setSearch(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-white dark:bg-[#1C1C1E] border border-gray-100 dark:border-white/5 rounded-xl text-xs font-bold dark:text-white focus:ring-2 focus:ring-amber-500/20 transition-all outline-none"/>
           </div>
-          <button type="button" onClick={() => load()} className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl text-[9px] font-bold uppercase tracking-wider bg-white dark:bg-white/5 border border-zinc-800 text-gray-300 transition-all">
+          <button type="button" onClick={() => load({ refresh: true })} className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl text-[9px] font-bold uppercase tracking-wider bg-white dark:bg-white/5 border border-zinc-800 text-gray-300 transition-all">
             <RefreshCcw size={14}/> {tr('reload')}
           </button>
         </div>

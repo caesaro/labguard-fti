@@ -57,6 +57,11 @@ const STRICT_POLICY_COMMENT_PREFIX = 'LABGUARD_TLS_BLOCK';
 const NAT_PLACE_BEFORE = process.env.LABGUARD_NAT_PLACE_BEFORE || '0';
 const MAC_BLOCK_COMMENT_PREFIX = (process.env.LABGUARD_MAC_BLOCK_PREFIX || 'LABGUARD_MAC_NO_INTERNET').trim();
 const MAC_PLACE_BEFORE = (process.env.LABGUARD_MAC_PLACE_BEFORE || '').trim();
+// Cache baca MAC access (ms). Satu kali baca = 2 print RouterOS (filter + nat) ≈ 3-7 detik;
+// tanpa cache setiap request browser memicu sesi RouterOS baru dan UI tampak "loading" terus.
+const MAC_ACCESS_CACHE_MS = Math.max(0, Number(process.env.MAC_ACCESS_CACHE_MS || 10000));
+// Batas keras durasi baca MAC access (ms) supaya request tidak menggantung tanpa batas.
+const MAC_ACCESS_TIMEOUT_MS = Math.max(0, Number(process.env.MAC_ACCESS_TIMEOUT_MS || Math.max(ROUTER_TIMEOUT_MS * 4, 20000)));
 const LAB_TEACHER_HOST_SUFFIX = Number(process.env.LAB_TEACHER_HOST_SUFFIX || 2);
 const LAB_INTERFACE_TERMS = (process.env.LAB_INTERFACE_MATCH || 'lab,vlan')
     .split(',')
@@ -1905,6 +1910,53 @@ async function addMacRuleRow(client, options) {
         return client.execute('/ip/firewall/filter/add', retryOptions);
     }
 }
+// ---- Cache + dedupe untuk baca data MAC access ----
+// Tujuan: "loading" data ditangani di backend, bukan diulang-ulang oleh frontend.
+// - cache pendek (MAC_ACCESS_CACHE_MS) -> request beruntun dilayani instan
+// - dedupe in-flight -> dua request bersamaan hanya memakai SATU sesi RouterOS
+// - timeout keras -> request selalu selesai (504) dan tidak menggantung
+let macAccessCache = { at: 0, data: null };
+let macAccessInFlight = null;
+function invalidateMacAccessCache() {
+    macAccessCache = { at: 0, data: null };
+}
+function withHardTimeout(promise, timeoutMs, label) {
+    if (!timeoutMs || timeoutMs <= 0)
+        return promise;
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            const error = new Error(`${label} melebihi batas ${timeoutMs} ms — router tidak merespons`);
+            error.statusCode = 504;
+            reject(error);
+        }, timeoutMs);
+        promise.then((value) => {
+            clearTimeout(timer);
+            resolve(value);
+        }, (error) => {
+            clearTimeout(timer);
+            reject(error);
+        });
+    });
+}
+async function loadMacAccessData({ force = false } = {}) {
+    const now = Date.now();
+    const isFresh = !!macAccessCache.data && (now - macAccessCache.at) < MAC_ACCESS_CACHE_MS;
+    if (!force && isFresh) {
+        return { ...macAccessCache.data, cached: true, fetchedAt: macAccessCache.at };
+    }
+    if (!force && macAccessInFlight)
+        return macAccessInFlight;
+    const run = withHardTimeout(readMacAccessData(), MAC_ACCESS_TIMEOUT_MS, 'Baca data MAC access');
+    macAccessInFlight = run
+        .then((data) => {
+        macAccessCache = { at: Date.now(), data };
+        return { ...data, cached: false, fetchedAt: macAccessCache.at };
+    })
+        .finally(() => {
+        macAccessInFlight = null;
+    });
+    return macAccessInFlight;
+}
 // CATATAN: RouterApiClient hanya punya satu queue balasan, jadi semua perintah pada satu
 // koneksi WAJIB sekuensial (jangan Promise.all dua execute pada client yang sama).
 async function readMacAccessData() {
@@ -2067,13 +2119,21 @@ async function removeMacBlock(ruleId) {
         return { ...mapped, table: 'filter' };
     });
 }
-app.get('/api/mac-access', requireSession, async (_req, res) => {
+app.get('/api/mac-access', requireSession, async (req, res) => {
     if (!HAS_CONFIG) {
         return res.json({ success: true, simulated: true, entries: mockMacBlocks.map((item) => ({ ...item })), unmanaged: [] });
     }
     try {
-        const { entries, unmanaged } = await readMacAccessData();
-        res.json({ success: true, entries, unmanaged });
+        const force = String(req.query?.refresh || '') === '1';
+        const { entries, unmanaged, cached, fetchedAt } = await loadMacAccessData({ force });
+        res.json({
+            success: true,
+            entries,
+            unmanaged,
+            cached,
+            fetchedAt,
+            cacheTtlMs: MAC_ACCESS_CACHE_MS,
+        });
     }
     catch (error) {
         res.status(error.statusCode || 500).json({ success: false, error: formatRouterError(error) });
@@ -2098,6 +2158,7 @@ app.post('/api/mac-access', requireSession, async (req, res) => {
     }
     try {
         const entry = await addMacBlock(input);
+        invalidateMacAccessCache();
         res.json({ success: true, entry });
     }
     catch (error) {
@@ -2131,6 +2192,7 @@ app.patch('/api/mac-access/:ruleId', requireSession, async (req, res) => {
     }
     try {
         const entry = await updateMacBlock(ruleId, body);
+        invalidateMacAccessCache();
         res.json({ success: true, entry });
     }
     catch (error) {
@@ -2149,6 +2211,7 @@ app.delete('/api/mac-access/:ruleId', requireSession, async (req, res) => {
     }
     try {
         const entry = await removeMacBlock(ruleId);
+        invalidateMacAccessCache();
         res.json({ success: true, entry });
     }
     catch (error) {
