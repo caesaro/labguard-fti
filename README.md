@@ -151,6 +151,14 @@ ROUTER_API_PORT="8728"
 ROUTER_API_TLS="false"
 ROUTER_TIMEOUT_MS="8000"
 
+# Cache baca RouterOS (ms). Satu sesi API = 1 baris log login + 1 baris logout di router,
+# jadi pembacaan snapshot ditahan sebentar. "0" = matikan cache.
+ROUTER_READ_CACHE_MS="8000"
+ROUTER_TRAFFIC_CACHE_MS="3000"
+ROUTER_READ_TIMEOUT_MS="20000"
+MAC_ACCESS_CACHE_MS="10000"
+MAC_ACCESS_TIMEOUT_MS="20000"
+
 LAB_INTERFACE_MATCH="vlan"
 
 WAN_INTERFACE_LIST=""
@@ -193,6 +201,31 @@ Frontend mengambil nilai env dari `GET /api/config/labs-only-order` saat halaman
 Konsekuensi: **mengubah `.env` butuh restart proses server** (`npm start`; pada `npm run dev` watcher
 sudah otomatis restart) dan **muat ulang halaman** agar UI membaca nilai baru.
 `LABGUARD_NAT_*` dan `LABGUARD_MAC_*` bersifat internal (nama tag rule di router), tidak ditampilkan di UI.
+
+### Banjir log RouterOS: kenapa ada cache baca
+
+RouterOS menulis **satu baris log per login API** (`user <u> logged in from <ip> via api`) plus satu
+baris logout saat koneksi ditutup. Karena `withRouter()` membuka koneksi per panggilan, dulu setiap
+tick browser berubah langsung menjadi baris log di router.
+
+Yang menjaga supaya tetap kecil (semua **jalur baca saja**, tidak ada perubahan konfigurasi router):
+
+1. **Satu snapshot, satu koneksi.** `readRouterSnapshot()` mengambil resource + interface + ip address
+   + NAT + queue tree dalam satu sesi, lalu di-cache `ROUTER_READ_CACHE_MS`. `/api/router/status` dan
+   `/api/interfaces` memakai snapshot yang sama, jadi satu tick core = satu sesi (dulu 3).
+2. **Traffic satu koneksi.** Semua `monitor-traffic` (interface lab + uplink) dibaca berurutan dalam
+   satu sesi, di-cache `ROUTER_TRAFFIC_CACHE_MS` (dulu 2 sesi per tick).
+3. **leases + ARP berurutan.** `/api/router/clients` dulu `Promise.all` dua `runRouterCommand` =
+   dua socket; sekarang satu koneksi (dulu 2 sesi per tick aux).
+4. **Dedupe in-flight.** Dua request bersamaan pada resource yang sama berbagi satu promise, bukan
+   membuka sesi kedua.
+5. **Interval polling UI** `CONTROL_REFRESH_MS=10000` dan `AUX_REFRESH_MS=30000` di `src/App.jsx`
+   (dulu 3000/20000). Grafik trafik tetap terisi karena riwayat sampel disimpan; yang berubah hanya
+   cakupan waktunya (resolusi lebih lebar, bukan rusak).
+
+Aturan saat mengubah kode: **setiap endpoint tulis wajib memanggil `invalidateRouterReadCache('router-snapshot')`**
+sesudah menulis, karena frontend langsung memanggil `fetchCoreData()` setelah toggle/bandwidth. Tanpa
+invalidasi, UI akan menampilkan status lama (admin bisa menekan tombol dua kali).
 
 ## Instalasi
 

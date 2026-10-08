@@ -20,8 +20,11 @@ const formatBandwidthMbps = (value) => {
     const normalized = Number(value);
     return Number.isInteger(normalized) ? `${normalized}` : normalized.toFixed(2).replace(/\.?0+$/, '');
 };
-const CONTROL_REFRESH_MS = 3000;
-const AUX_REFRESH_MS = 20000;
+// Interval polling UI. Setiap tick = 1 sesi RouterOS = 1 baris log login + 1 baris logout di router,
+// jadi interval ini langsung menentukan besar banjir log. Grafik trafik tetap terisi karena
+// sampel disimpan (riwayat), hanya cakupan waktunya yang melebar.
+const CONTROL_REFRESH_MS = 10000;
+const AUX_REFRESH_MS = 30000;
 const formatRateMbps = (value) => {
     const normalized = Number(value || 0);
     return normalized >= 1_000_000

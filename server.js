@@ -62,6 +62,14 @@ const MAC_PLACE_BEFORE = (process.env.LABGUARD_MAC_PLACE_BEFORE || '').trim();
 const MAC_ACCESS_CACHE_MS = Math.max(0, Number(process.env.MAC_ACCESS_CACHE_MS || 10000));
 // Batas keras durasi baca MAC access (ms) supaya request tidak menggantung tanpa batas.
 const MAC_ACCESS_TIMEOUT_MS = Math.max(0, Number(process.env.MAC_ACCESS_TIMEOUT_MS || Math.max(ROUTER_TIMEOUT_MS * 4, 20000)));
+// Cache baca snapshot RouterOS (ms). Satu sesi RouterOS = 1 baris log login + 1 baris logout di
+// router, jadi pembacaan snapshot ditahan sebentar dan request beruntun memakai hasil yang sama.
+// 0 = matikan cache. Dituning lewat env, bukan hardcode.
+const ROUTER_READ_CACHE_MS = Math.max(0, Number(process.env.ROUTER_READ_CACHE_MS || 8000));
+// Cache khusus monitor-traffic (ms). Grafik tetap terisi karena sampel disimpan per interval.
+const ROUTER_TRAFFIC_CACHE_MS = Math.max(0, Number(process.env.ROUTER_TRAFFIC_CACHE_MS || 3000));
+// Batas keras durasi baca snapshot supaya request tidak menggantung tanpa batas.
+const ROUTER_READ_TIMEOUT_MS = Math.max(0, Number(process.env.ROUTER_READ_TIMEOUT_MS || Math.max(ROUTER_TIMEOUT_MS * 4, 20000)));
 const LAB_TEACHER_HOST_SUFFIX = Number(process.env.LAB_TEACHER_HOST_SUFFIX || 2);
 const LAB_INTERFACE_TERMS = (process.env.LAB_INTERFACE_MATCH || 'lab,vlan')
     .split(',')
@@ -819,9 +827,47 @@ async function withRouter(handler) {
 async function runRouterCommand(command, options) {
     return withRouter((client) => client.execute(command, options));
 }
-async function getLabInterfaces() {
+// ---- Cache + dedupe baca RouterOS (READ-ONLY) ----
+// Setiap sesi RouterOS menulis 1 baris log "user ... logged in ... via api" + 1 baris logout.
+// Karena itu pembacaan snapshot ditahan sebentar (TTL) dan request bersamaan berbagi SATU sesi.
+// Ini murni jalur baca: tidak ada perintah konfigurasi dan tidak ada perubahan di router.
+const routerReadCache = new Map();
+const routerReadInFlight = new Map();
+function invalidateRouterReadCache(...keys) {
+    if (!keys.length) {
+        routerReadCache.clear();
+        return;
+    }
+    for (const key of keys)
+        routerReadCache.delete(key);
+}
+async function readThroughCache(key, ttlMs, loader, { force = false } = {}) {
+    if (!force) {
+        const cached = routerReadCache.get(key);
+        if (cached && (Date.now() - cached.at) < ttlMs)
+            return cached.data;
+        const pending = routerReadInFlight.get(key);
+        if (pending)
+            return pending;
+    }
+    const run = withHardTimeout(Promise.resolve().then(loader), ROUTER_READ_TIMEOUT_MS, `Baca ${key}`)
+        .then((data) => {
+        routerReadCache.set(key, { at: Date.now(), data });
+        return data;
+    })
+        .finally(() => {
+        routerReadInFlight.delete(key);
+    });
+    routerReadInFlight.set(key, run);
+    return run;
+}
+// Satu koneksi untuk SELURUH snapshot (resource + interface + ip address + nat + queue tree).
+// Dulu /api/router/status dan /api/interfaces membuka sesi masing-masing, dan
+// /api/interfaces/traffic membuka sesi ketiga hanya untuk membaca ulang daftar interface.
+async function readRouterSnapshot() {
     return withRouter(async (client) => {
-        const rows = await client.execute('/interface/print', {
+        const resourceRows = await client.execute('/system/resource/print');
+        const interfaceRows = await client.execute('/interface/print', {
             '.proplist': '.id,name,disabled,type,comment,running',
         });
         const addressRows = await client.execute('/ip/address/print', {
@@ -833,51 +879,73 @@ async function getLabInterfaces() {
         const queueTreeRows = await client.execute('/queue/tree/print', {
             '.proplist': '.id,name,parent,packet-mark,limit-at,max-limit,disabled,comment',
         });
-        const addressMap = buildInterfaceAddressMap(addressRows);
-        const managedInterfaces = rows.filter(isManagedInterface).map((row) => {
-            const iface = mapInterface(row);
-            const interfaceCidr = findInterfaceCidr(iface, addressMap, addressRows);
-            const subnetCidr = networkCidrFromCidr(interfaceCidr);
-            const fallbackMock = mockInterfaces.find(m =>
-                m.name.toLowerCase().replace(/\s+/g, '') === iface.name.toLowerCase().replace(/\s+/g, '') ||
-                (extractLabCode(m.name) && extractLabCode(m.name) === extractLabCode(iface.name))
-            );
-            const teacherIp = teacherIpFromCidr(interfaceCidr) || fallbackMock?.teacherIp || undefined;
-            const studentNatRule = findStudentNatRule(natRules, subnetCidr || undefined);
-            const teacherNatRule = findTeacherNatRule(natRules, teacherIp || undefined);
-            const natBlockRule = findNatBlockRule(natRules, iface.name);
-            const queueTreeRule = findQueueTreeRule(queueTreeRows, iface);
-            const studentsEnabled = studentNatRule ? isTruthyRouterDisabled(studentNatRule.disabled) === false : !natBlockRule;
-            const internetBlocked = studentNatRule ? isTruthyRouterDisabled(studentNatRule.disabled) : !!natBlockRule && !isTruthyRouterDisabled(natBlockRule.disabled);
-            const bandwidthLimit = queueTreeRule ? toRouterNumber(queueTreeRule['max-limit']) : 0;
-            return {
-                ...iface,
-                enabled: studentsEnabled,
-                internetBlocked,
-                natRuleId: studentNatRule?.['.id'] || natBlockRule?.['.id'],
-                teacherIp: teacherIp || undefined,
-                queueTreeId: queueTreeRule?.['.id'],
-                queueTreeName: queueTreeRule?.name,
-                bandwidthEnabled: queueTreeRule ? !isTruthyRouterDisabled(queueTreeRule.disabled) : false,
-                bandwidthLimit: queueTreeRule ? bandwidthLimit : undefined,
-                bandwidthLimitMbps: queueTreeRule ? toMbps(bandwidthLimit) : undefined,
-                hasQueueTree: !!queueTreeRule,
-                teacherInternetEnabled: teacherNatRule ? !isTruthyRouterDisabled(teacherNatRule.disabled) : false,
-            };
-        });
-        return managedInterfaces;
+        return { resource: resourceRows[0] || {}, interfaceRows, addressRows, natRules, queueTreeRows };
     });
 }
-async function getTrafficForInterfaces(ifaces) {
-    if (!ifaces.length)
-        return [];
-    return withRouter(async (client) => {
-        const trafficRows = [];
-        for (const iface of ifaces) {
-            trafficRows.push(await monitorInterfaceTraffic(client, iface.name, iface.id));
-        }
-        return trafficRows;
+async function getRouterSnapshot({ force = false } = {}) {
+    return readThroughCache('router-snapshot', ROUTER_READ_CACHE_MS, readRouterSnapshot, { force });
+}
+async function getLabInterfaces({ force = false } = {}) {
+    return buildManagedInterfaces(await getRouterSnapshot({ force }));
+}
+function buildManagedInterfaces({ interfaceRows: rows, addressRows, natRules, queueTreeRows }) {
+    const addressMap = buildInterfaceAddressMap(addressRows);
+    const managedInterfaces = rows.filter(isManagedInterface).map((row) => {
+        const iface = mapInterface(row);
+        const interfaceCidr = findInterfaceCidr(iface, addressMap, addressRows);
+        const subnetCidr = networkCidrFromCidr(interfaceCidr);
+        const fallbackMock = mockInterfaces.find(m =>
+            m.name.toLowerCase().replace(/\s+/g, '') === iface.name.toLowerCase().replace(/\s+/g, '') ||
+            (extractLabCode(m.name) && extractLabCode(m.name) === extractLabCode(iface.name))
+        );
+        const teacherIp = teacherIpFromCidr(interfaceCidr) || fallbackMock?.teacherIp || undefined;
+        const studentNatRule = findStudentNatRule(natRules, subnetCidr || undefined);
+        const teacherNatRule = findTeacherNatRule(natRules, teacherIp || undefined);
+        const natBlockRule = findNatBlockRule(natRules, iface.name);
+        const queueTreeRule = findQueueTreeRule(queueTreeRows, iface);
+        const studentsEnabled = studentNatRule ? isTruthyRouterDisabled(studentNatRule.disabled) === false : !natBlockRule;
+        const internetBlocked = studentNatRule ? isTruthyRouterDisabled(studentNatRule.disabled) : !!natBlockRule && !isTruthyRouterDisabled(natBlockRule.disabled);
+        const bandwidthLimit = queueTreeRule ? toRouterNumber(queueTreeRule['max-limit']) : 0;
+        return {
+            ...iface,
+            enabled: studentsEnabled,
+            internetBlocked,
+            natRuleId: studentNatRule?.['.id'] || natBlockRule?.['.id'],
+            teacherIp: teacherIp || undefined,
+            queueTreeId: queueTreeRule?.['.id'],
+            queueTreeName: queueTreeRule?.name,
+            bandwidthEnabled: queueTreeRule ? !isTruthyRouterDisabled(queueTreeRule.disabled) : false,
+            bandwidthLimit: queueTreeRule ? bandwidthLimit : undefined,
+            bandwidthLimitMbps: queueTreeRule ? toMbps(bandwidthLimit) : undefined,
+            hasQueueTree: !!queueTreeRule,
+            teacherInternetEnabled: teacherNatRule ? !isTruthyRouterDisabled(teacherNatRule.disabled) : false,
+        };
     });
+    return managedInterfaces;
+}
+// Semua monitor-traffic (interface lab + uplink) dibaca dalam SATU koneksi, lalu ditahan
+// singkat supaya dua request browser pada tick yang sama tidak membuka dua sesi RouterOS.
+// Perintah monitor-traffic tetap sama seperti sebelumnya (once=, ~1 detik per interface).
+async function readRouterTraffic(ifaces) {
+    return withRouter(async (client) => {
+        const interfaces = [];
+        for (const iface of ifaces) {
+            interfaces.push(await monitorInterfaceTraffic(client, iface.name, iface.id));
+        }
+        const uplinkName = UPLINK_INTERFACE || 'ether2-backboneUKSW';
+        const uplink = await monitorInterfaceTraffic(client, uplinkName, 'uplink');
+        return { interfaces, uplink };
+    });
+}
+async function getRouterTraffic(ifaces, { force = false } = {}) {
+    return readThroughCache('router-traffic', ROUTER_TRAFFIC_CACHE_MS, () => readRouterTraffic(ifaces), { force });
+}
+async function getTrafficForInterfaces(ifaces) {
+    return (await getRouterTraffic(ifaces)).interfaces;
+}
+async function getUplinkTraffic() {
+    const ifaces = await getLabInterfaces();
+    return (await getRouterTraffic(ifaces)).uplink;
 }
 function mockTraffic() {
     return mockInterfaces.map((iface) => ({
@@ -894,9 +962,6 @@ function mockUplinkTraffic() {
         rxRate: Math.floor(Math.random() * 180_000_000) + 40_000_000,
         txRate: Math.floor(Math.random() * 120_000_000) + 20_000_000,
     };
-}
-async function getUplinkTraffic() {
-    return withRouter((client) => monitorInterfaceTraffic(client, UPLINK_INTERFACE || 'ether2-backboneUKSW', 'uplink'));
 }
 async function getSitePolicies() {
     return withRouter(async (client) => {
@@ -1402,10 +1467,12 @@ app.get('/api/router/status', requireSession, async (_req, res) => {
         });
     }
     try {
-        const rows = await runRouterCommand('/system/resource/print');
+        // Snapshot yang sama dipakai /api/interfaces, jadi satu tick browser = satu sesi RouterOS
+        // (sebelumnya status dan daftar interface membuka sesi terpisah).
+        const snapshot = await getRouterSnapshot();
         res.json({
             status: 'connected',
-            resource: rows[0] || {},
+            resource: snapshot.resource,
             config: {
                 ip: ROUTER_IP,
                 user: ROUTER_USER,
@@ -1684,6 +1751,9 @@ app.post('/api/interfaces/:id/toggle', requireSession, async (req, res) => {
     try {
         const result = await setInternetAccessByNat(id, enabled);
         pushLocalLog(`Internet mahasiswa [${result.iface.name}] ${enabled ? 'enabled' : 'blocked'} via NAT (pengajar ${result.teacherIp} tetap aktif)`, enabled ? 'success' : 'warning');
+        // WAJIB: frontend langsung memanggil fetchCoreData() setelah toggle. Tanpa invalidasi,
+        // /api/interfaces akan menjawab dari cache snapshot lama dan status di UI balik lagi.
+        invalidateRouterReadCache('router-snapshot');
         res.json({
             success: true,
             id,
@@ -1723,6 +1793,8 @@ app.post('/api/interfaces/:id/bandwidth', requireSession, async (req, res) => {
     try {
         const result = await setQueueTreeBandwidth(id, bandwidthMbps);
         pushLocalLog(`Queue tree [${result.iface.name}] di-set ke ${result.bandwidthLimitMbps} Mbps`, 'info');
+        // Sama seperti toggle: paksa pembacaan ulang supaya UI tidak menampilkan limit lama.
+        invalidateRouterReadCache('router-snapshot');
         res.json({
             success: true,
             id,
@@ -1751,11 +1823,14 @@ app.get('/api/router/clients', requireSession, async (_req, res) => {
         });
     }
     try {
-        const [leases, arp] = await Promise.all([
-            runRouterCommand('/ip/dhcp-server/lease/print'),
-            runRouterCommand('/ip/arp/print'),
-        ]);
-        res.json({ leases, arp });
+        // leases + arp dibaca BERURUTAN dalam satu koneksi. Sebelumnya Promise.all memanggil
+        // runRouterCommand dua kali = dua socket = dua baris log login di router.
+        const data = await withRouter(async (client) => {
+            const leases = await client.execute('/ip/dhcp-server/lease/print');
+            const arp = await client.execute('/ip/arp/print');
+            return { leases, arp };
+        });
+        res.json(data);
     }
     catch (error) {
         res.status(500).json({ error: formatRouterError(error) });
